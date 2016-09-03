@@ -318,9 +318,12 @@ test('dropbox test suite #2 sync 10k files', t => {
     let count = 0;
     let http500 = 0;
     let simulatedErrors = (files.length + 50) / 100 | 0;
-    nock('https://content.dropboxapi.com')
+    // if simulated errors are more than a hundred, they'll cause
+    // another http500!
+    simulatedErrors += (simulatedErrors + 50) / 100 | 0;
+    var interceptor = nock('https://content.dropboxapi.com')
     .post('/2/files/download')
-    .times(files.length + simulatedErrors)
+    .times(20000)
     .reply(function(uri, requestBody) {
       count++;
       if (!startTime) {
@@ -361,13 +364,14 @@ test('dropbox test suite #2 sync 10k files', t => {
     user.onAny(eventVerifier);
 
     return user.sync().then(result => {
+      nock.removeInterceptor(interceptor);
       user.offAny(eventVerifier);
       let elapsed = lastTime - startTime;
       let actualRate = result.downloads.length / elapsed * 1000 | 0;
       t.ok(actualRate > 500, 'should support burst');
       t.equal(http500, simulatedErrors, 'should simulate calculated amount of HTTP 500');
       t.equal(Dropbox.stats.retries, http500, 'should retry on http 500');
-      t.equal(Dropbox.stats.completed, 2 + 1 + files.length + Dropbox.stats.retries, 'should have stats.completed = 8');
+      t.equal(Dropbox.stats.completed, 7 + files.length + Dropbox.stats.retries, 'should have correct stats.completed');
       t.deepEqual(result.downloads.length, files.length, 'should have same amount of file entries');
       t.equal(eventStats['sync-file-downloaded'], files.length, 'should fire sync-file-downloaded');
       t.equal(eventStats['sync-start'], 1, 'should fire sync-start once');

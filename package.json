@@ -16,7 +16,7 @@
   "bugs": {
     "url": "https://github.com/engina/dropbox2/issues"
   },
-  "homepage": "PROJECT_URL",
+  "homepage": "https://github.com/engina/dropbox2#readme",
   "devDependencies": {
     "eslint": "^3.4.0",
     "eslint-config-google": "^0.6.0",
