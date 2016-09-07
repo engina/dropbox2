@@ -1,37 +1,45 @@
-const test = require('tape');
+//const mock = require('mock-fs');
+const tape = require('tape');
 const nock = require('nock');
-const mock = require('mock-fs');
 const fixtures = require('./fixtures/index');
-const ProgressBar = require('progress');
 const Promise = require('bluebird');
-const fse = Promise.promisifyAll(require('fs-extra'));
+const fs  = Promise.promisifyAll(require('fs'));
 const rcc = require('require-cache-control');
-const Throttler = require('../src/throttler');
+
+// Will be freshly loaded for each test
+let Dropbox;
 
 nock.disableNetConnect();
 
-function debug(str) {
-  console.log(new Date().toTimeString(), ...arguments);
-}
-
-function n(endpoint, opts) {
-  return nock('https://api.dropboxapi.com', {
-    // verify that every request should have an access token
-    reqheaders: {
-      Authorization: value => {
-        if (value.startsWith('Bearer') === false ||
-            value.indexOf(fixtures.dropbox.authInfo.access_token) === -1) {
-          throw new Error('Invalid Authorization header', value);
-        }
-        return true;
-      }
+rcc.snapshot();
+// Test wrapper
+function test(testName, testBody, testFunction = tape) {
+  // Run the test via tape
+  testFunction(testName, t => {
+    //mock();
+    nock.cleanAll();
+    rcc.restore();
+    Dropbox = require('../src/dropbox');
+    Dropbox.events.on('log', (msg, options, error) => {
+      // console.log(`LOG [${testName}]`, msg, options, error);
+    });
+    // Run the actual test body which always returns a promise.
+    let testResult = testBody(t);
+    if (testResult === undefined || testResult.then === undefined || typeof testResult.then !== 'function') {
+      throw new Error(`Test '${testName}' does not return a blurbird promise.`);
     }
-  }).post('/2/' + endpoint, opts);
+    testResult.finally(() => {
+      //mock.restore();
+      t.end();
+    });
+  });
 }
 
-test('dropox static methods', t => {
-  rcc.snapshot();
-  const Dropbox = require('../src/dropbox');
+test.only = (testName, testBody) => {
+  return test(testName, testBody, tape.only);
+};
+
+test('dropox base request method', t => {
   let test1msg = 'should reject when no access token is present';
   let test1 = Dropbox.rawRequest({})
   .then(() => {
@@ -54,361 +62,277 @@ test('dropox static methods', t => {
     t.equal(err.message, 'You cannot upload and download at the same time.', test2msg);
   });
 
-  Promise.all([test1, test2])
-  .finally(() => {
-    rcc.restore();
-    t.end();
+  nock('https://api.dropboxapi.com')
+  .post('/2/test/endpoint')
+  .reply(function(uri, requestBody) {
+    // https://github.com/node-nock/nock#header-field-names-are-case-insensitive
+    t.equal(this.req.headers.authorization, 'Bearer foo', 'should send access token');
+    t.equal(requestBody.test, 'parameter', 'should send parameters');
+    return [200, JSON.stringify({message: 'received'})];
   });
+  let test3 = Dropbox.rawRequest({
+    uri: 'https://api.dropboxapi.com/2/test/endpoint',
+    accessToken: 'foo',
+    parameters: {
+      test: 'parameter'
+    }
+  })
+  .then(response => {
+    t.deepEqual(response, {message: 'received'}, 'should receive parameters');
+  })
+  .catch(Dropbox.RequestError, err => {
+    t.fail('should not fail');
+  });
+
+  return Promise.all([test1, test2, test3]);
 });
 
-test('dropbox error handling', t => {
-  mock();
-  rcc.snapshot();
-  const Dropbox = require('../src/dropbox');
-  let testMessage = 'should throw exception with invalid account id';
-  try {
-    new Dropbox('../../sensitive_directory');
-    t.fail(testMessage);
-  } catch (err) {
-    t.equal(err.message, 'Malicious account id ../../sensitive_directory', testMessage);
+test('dropbox download', t => {
+  let testData = '';
+  for (let i = 0; i < 1024 * 10; i++) {
+    testData += String(i);
   }
+  nock('https://content.dropboxapi.com')
+  .post('/2/files/download')
+  .times(4)
+  .reply(function(uri, requestBody) {
+    // https://github.com/node-nock/nock#header-field-names-are-case-insensitive
+    let req = JSON.parse(this.req.headers['dropbox-api-arg']);
+    if (req.path === undefined || typeof req.path !== 'string') {
+      t.fail('should set Dropbox-API-Arg HTTP Header');
+      return;
+    }
+    t.pass('should set Dropbox-API-Arg HTTP Header');
+    return [200, testData];
+  });
 
-  n('users/get_account')
-  .reply(200, fixtures.dropbox.responses.users$get_account_fail);
+  let test1 = Dropbox.download('dummyAccessToken', '/file/on/the/cloud', './.tmp1~')
+  .then(result => {
+    let actual = fs.readFileSync('./.tmp1~', 'utf8');
+    fs.unlinkSync('./.tmp1~');
+    t.equal(actual, testData, 'should download to file path');
+  });
 
-  testMessage = 'should reject for non verified email';
-  Dropbox.create(fixtures.dropbox.authInfo)
+  let test2 = Dropbox.download('dummyAccessToken', '/file/on/the/cloud', fs.createWriteStream('./.tmp2~'))
+  .then(result => {
+    let actual = fs.readFileSync('./.tmp2~', 'utf8');
+    fs.unlinkSync('./.tmp2~');
+    t.equal(actual, testData, 'should download to write stream');
+  });
+
+  let test3msg = 'should reject gracefully if there is an error with the download destination';
+  let test3 = Dropbox.download('dummyAccessToken', '/file/on/the/cloud', '/permission/denied')
+  .then(result => {
+    t.fail(test3msg);
+  })
+  .catch(Dropbox.RequestError, error => {
+    t.equal(error.message, 'There was an error with the download write stream.', test3msg);
+  });
+
+  let test4msg = 'should reject gracefully if download parameter is not a stream or path';
+  let test4 = Dropbox.download('dummyAccessToken', '/file/on/the/cloud', 31337)
+  .then(result => {
+    t.fail(test4msg);
+  })
+  .catch(Dropbox.RequestError, error => {
+    t.equal(error.message, 'Download file must be a file path or stream.Writable.', test4msg);
+  });
+  return Promise.all([test1, test2, test3, test4]);
+});
+
+test('dropbox upload', t => {
+  let testData = '';
+  for (let i = 0; i < 1024 * 10; i++) {
+    testData += String(i);
+  }
+  fs.writeFileSync('./.tmp~', testData);
+  nock('https://content.dropboxapi.com')
+  .post('/2/files/upload')
+  .times(2)
+  .reply(function(uri, requestBody) {
+    // https://github.com/node-nock/nock#header-field-names-are-case-insensitive
+    t.ok(this.req.headers['dropbox-api-arg'] !== undefined, 'should set Dropbox-API-Arg HTTP Header');
+    let req;
+    try {
+      req = JSON.parse(this.req.headers['dropbox-api-arg']);
+    } catch (e) {
+      t.fail('should have Dropbox-API-Arg jasonified properly');
+    }
+    t.equal(req.path, '/path/on/the/cloud', 'should set path');
+    t.pass('should set Dropbox-API-Arg HTTP Header');
+    t.equal(this.req.headers['content-type'], 'application/octet-stream', 'should set HTTP Content-Type');
+    t.equal(requestBody, testData, 'should upload the payload');
+    return [200, testData];
+  });
+
+  let test1 = Dropbox.upload('dummyAccessToken', './.tmp~', '/path/on/the/cloud')
+  .catch(error => {
+    t.fail('should be able to upload via path without errors');
+  });
+
+  let test2 = Dropbox.upload('dummyAccessToken', fs.createReadStream('./.tmp~'), '/path/on/the/cloud')
+  .catch(() => {
+    t.fail('should be able to upload via stream.Readable without errors');
+  });
+
+  return Promise.all([test1, test2])
+  .finally(() => {
+    fs.unlinkSync('./.tmp~');
+  });
+});
+
+test('dropbox upload error handling', t => {
+  nock('https://content.dropboxapi.com')
+  .post('/2/files/upload')
+  .times(2)
+  .reply(200);
+  let test1msg = 'should reject gracefully if there is an error with the upload source';
+  let test1 = Dropbox.upload('dummyAccessToken', '/no/permission', '/path/on/the/cloud')
   .then(() => {
-    t.fail(testMessage);
+    t.fail(test1msg);
   })
-  .catch(err => {
-    t.equal(err.message, 'Dropbox user email not verified', testMessage);
+  .catch(Dropbox.RequestError, error => {
+    t.equal(error.message, 'There was an error with the upload readble stream.', test1msg);
+  });
+
+  let test2msg = 'should reject gracefully the upload source is not a stream or file path';
+  let test2 = Dropbox.upload('dummyAccessToken', 31337, '/path/on/the/cloud')
+  .then(() => {
+    t.fail(test2msg);
+  })
+  .catch(Dropbox.RequestError, error => {
+    t.equal(error.message, 'Upload file must be a file path or stream.Readable.', test2msg);
+  });
+
+  return Promise.all([test1, test2]);
+});
+
+test('dropbox on HTTP 429 Error', t => {
+  const WAIT = 2;
+  let requests = [];
+  nock('https://api.dropboxapi.com')
+  .post('/2/test/endpoint')
+  .times(Dropbox.MAX_RETRY + 1)
+  .reply(function(uri, requestBody) {
+    process.stderr.write('.');
+    requests.push(Date.now());
+    if (requests.length <= Dropbox.MAX_RETRY) {
+      return [429, {message: 'Rate limited'}, {'retry-after': WAIT}];
+    }
+    return [200, {message: 'ok'}];
+  });
+
+  let retry = 0;
+  Dropbox.events.on('retry', () => {
+    retry++;
+  });
+  return Dropbox.rpcRequest('dummyAccessToken', 'test/endpoint')
+  .then(response => {
+    t.equal(retry, Dropbox.MAX_RETRY, 'should emit rate-limited events');
+    let elapsed = requests[Dropbox.MAX_RETRY] - requests[0];
+    let actualInterval = elapsed / (requests.length - 1);
+    let expectedInterval = WAIT * 1000;
+    let ratio = actualInterval / expectedInterval;
+    t.ok(ratio > 0.95 && ratio < 1.05, 'should respect 429 wait time');
+    t.equal(response.message, 'ok', 'should get the response after retries');
   })
   .finally(() => {
-    t.end();
-    mock.restore();
-    rcc.restore();
+    t.equal(Dropbox.stats.retries, Dropbox.MAX_RETRY, 'should update stats.retries');
   });
 });
 
-test('dropbox test suite #1 sync ~600 files', t => {
-  rcc.snapshot();
-  const Dropbox = require('../src/dropbox');
-  mock(fixtures.fs);
-  Dropbox.events.onAny((event, value) => {
-    // debug('dropbox static event', event, value);
-  });
-  // test create
-  n('users/get_account')
-  .reply(200, fixtures.dropbox.responses.users$get_account);
+test('dropbox on too many retries', t => {
+  nock('https://api.dropboxapi.com')
+  .post('/2/test/endpoint')
+  .times(6)
+  .reply(500, 'Interval Server Error');
 
-  Dropbox.create(fixtures.dropbox.authInfo)
-  .then(user => {
-    return user.getWhois().then(result => {
-      t.deepEqual(result, fixtures.dropbox.responses.users$get_account, 'should save whois information');
-      return user;
-    });
+  return Dropbox.rpcRequest('dummyAccessToken', 'test/endpoint')
+  .then(response => {
+    t.fail('should not resolve');
   })
-  .then(user => {
-    return user.getAuth().then(auth => {
-      t.deepEqual(auth, fixtures.dropbox.authInfo, 'should save authInfo');
-      return user;
-    });
+  .catch(Dropbox.RequestError, error => {
+    t.equal(error.message, 'Too many errors for request', 'should reject with Dropbox.RequestError');
   })
-  .then(user => {
-    return user.getCursor()
-    .then(cursor => {
-      t.fail('should reject when asked for cursor, when there is none');
-    })
-    .catch(err => {
-      t.equal(err.code, 'ENOENT', 'should reject with ENOENT');
-      return user;
-    });
-  })
-  .then(user => {
-    t.deepEqual(Dropbox.stats, {
-      flight: 0,
-      pending: 0,
-      completed: 1,
-      errors: 0,
-      retries: 0
-    }, 'should have correct request stats');
-    return user;
-  })
-  .then(user => {
-    return Dropbox.list().then(userList => {
-      t.deepEqual(userList, [fixtures.dropbox.authInfo.account_id], 'should list created users');
-      return user;
-    });
-  })
-  .then(user => {
-    t.equal(user.toString(), `DropboxUser ${fixtures.dropbox.authInfo.account_id}`, 'should have meaningful toString()');
-    return user;
-  })
-  .then(user => {
-    n('files/list_folder')
-    .reply(200, fixtures.dropbox.responses.files$list_folder);
-
-    return user.delta()
-    .then(result => {
-      t.deepEqual(result.allEntries,
-                  fixtures.dropbox.responses.files$list_folder.entries,
-                  'should return proper entries');
-      t.equal(result.cursor,
-              'AAGagXT71XL4J6Gd_uoJjLbssY8cbR2p4czWIaUxBgtmjzcC10Kin23pH5rIzANrMIRxVx5nUC_dcBRuz0Q_sPNIUEklay-SYNxDzUf5IsnrrjRiEY3hUeTQkxfiVQXPuEzixS0J_P0ZhbUb-XmbMinB',
-              'should return correct cursor value');
-      t.ok(result.has_more === undefined, 'should not have has_more property');
-      t.equal(Dropbox.stats.completed, 2, 'should have stats.completed = 2');
-      return user;
-    });
-  })
-  .then(user => {
-    n('files/list_folder')
-    .reply(200, fixtures.dropbox.responses.files$list_folder);
-    // this is the test data
-    let allEntries = fixtures.dropbox.responses.files$list_folder.entries;
-    let files = allEntries.filter(e => e['.tag'] === 'file');
-    var bar = new ProgressBar('Syncing :bar [:current/:total] Elapsed: :elapsed ETA: :eta',
-    {total: files.length, width: 40});
-
-    let startTime;
-    let lastTime;
-    let count = 0;
-    let http500 = 0;
-    let simulatedErrors = (files.length + 50) / 100 | 0;
-    nock('https://content.dropboxapi.com')
-    .post('/2/files/download')
-    .times(files.length + simulatedErrors)
-    .reply(function(uri, requestBody) {
-      count++;
-      if (!startTime) {
-        startTime = Date.now();
-      }
-      lastTime = Date.now();
-      // https://github.com/node-nock/nock#header-field-names-are-case-insensitive
-      let req = JSON.parse(this.req.headers['dropbox-api-arg']);
-      if (req.path === undefined || typeof req.path !== 'string') {
-        throw new Error('Dropbox-API-Arg HTTP Header should be set for download/uploads.');
-      }
-      let buf = '';
-      for (let i = 0; i < 1024; i++) {
-        buf += `${req.path}\n`;
-      }
-      // fake a http 500 in every 100th download attempt
-      if ((count % 100) === 50) {
-        http500++;
-        return [500, 'Internval Server Error'];
-      }
-      return [200, buf];
-    });
-
-    let syncTasks = {};
-    let eventStats = {};
-    function eventVerifier(event, value) {
-      if (eventStats[event] === undefined)
-        eventStats[event] = 0;
-      eventStats[event]++;
-      if (event === 'sync-tasks') {
-        syncTasks = value;
-      }
-
-      if (event === 'sync-file-downloaded') {
-        bar.tick();
-      }
-    }
-    user.onAny(eventVerifier);
-
-    return user.sync().then(result => {
-      user.offAny(eventVerifier);
-      let elapsed = lastTime - startTime;
-      let actualRate = result.downloads.length / elapsed * 1000 | 0;
-      t.ok(actualRate > 500, 'should support burst');
-      t.equal(http500, simulatedErrors, 'should simulate calculated amount of HTTP 500');
-      t.equal(Dropbox.stats.retries, http500, 'should retry on http 500');
-      t.equal(Dropbox.stats.completed, 2 + 1 + files.length + Dropbox.stats.retries, 'should have stats.completed = 8');
-      t.deepEqual(result.downloads.length, files.length, 'should have same amount of file entries');
-      t.equal(eventStats['sync-file-downloaded'], files.length, 'should fire sync-file-downloaded');
-      t.equal(eventStats['sync-start'], 1, 'should fire sync-start once');
-      t.equal(eventStats['retry'], Dropbox.stats.retries, 'should fire retry event for each retry attempt');
-      let fail = false;
-      for (let file of syncTasks.downloads) {
-        let actual = fse.readFileSync(file.absolutePath, 'utf8');
-        let expected = '';
-        for (let i = 0; i < 1024; i++) {
-          expected += `${file.id}\n`;
-        }
-        if (actual !== expected) {
-          debug('Download error', file.absolutePath, actual, expected);
-          fail = true;
-          break;
-        }
-      }
-      t.ok(fail === false, 'should download files reliably');
-      return user;
-    });
-  })
-  .then(user => {
-    return user.getCursor(cursor => {
-      t.equal(cursor, fixtures.dropbox.responses.files$list_folder.cursor, 'should have its cursor updated');
-      return user;
-    });
+  .catch(error => {
+    t.fail('should only reject with Dropbox.RequestError');
   })
   .finally(() => {
-    rcc.restore();
-    t.end();
-    mock.restore();
+    t.equal(Dropbox.stats.retries, Dropbox.MAX_RETRY, 'should update stats.retries');
   });
-  // test throttling
-  // test 429 handling
-  // test abrupt download cancel
-  // test files list continue
-  // test sync reliability
-  // test web hooks
-  // test web hook signature
 });
 
-test('dropbox test suite #2 sync 10k files', t => {
-  rcc.snapshot();
-  const Dropbox = require('../src/dropbox');
-  // disable throttler, we'll test the throttler later
-  Dropbox.THROTTLER = new Throttler(60000, 60000);
-  mock(fixtures.fs);
-  n('users/get_account')
-  .reply(200, fixtures.dropbox.responses.users$get_account);
-
-  Dropbox.create(fixtures.dropbox.authInfo)
-  .then(user => {
-    return user.getWhois().then(result => {
-      t.deepEqual(result, fixtures.dropbox.responses.users$get_account, 'should save whois information');
-      return user;
-    });
-  })
-  .then(user => {
-    n('files/list_folder')
-    .reply(200, fixtures.dropbox.responses.files$list_folder_big);
-
-    n('files/list_folder/continue', body => body.cursor === fixtures.dropbox.responses.files$list_folder_big.cursor)
-    .reply(200, fixtures.dropbox.responses.files$list_folder$cont[0]);
-
-    n('files/list_folder/continue', body => body.cursor === fixtures.dropbox.responses.files$list_folder$cont[0].cursor)
-    .reply(200, fixtures.dropbox.responses.files$list_folder$cont[1]);
-
-    n('files/list_folder/continue', body => body.cursor === fixtures.dropbox.responses.files$list_folder$cont[1].cursor)
-    .reply(200, fixtures.dropbox.responses.files$list_folder$cont[2]);
-
-    n('files/list_folder/continue', body => body.cursor === fixtures.dropbox.responses.files$list_folder$cont[2].cursor)
-    .reply(200, fixtures.dropbox.responses.files$list_folder$cont[3]);
-
-    n('files/list_folder/continue', body => body.cursor === fixtures.dropbox.responses.files$list_folder$cont[3].cursor)
-    .reply(200, fixtures.dropbox.responses.files$list_folder$cont[4]);
-    let allEntries = fixtures.dropbox.responses.files$list_folder_big.entries;
-    allEntries = allEntries.concat(fixtures.dropbox.responses.files$list_folder$cont[0].entries);
-    allEntries = allEntries.concat(fixtures.dropbox.responses.files$list_folder$cont[1].entries);
-    allEntries = allEntries.concat(fixtures.dropbox.responses.files$list_folder$cont[2].entries);
-    allEntries = allEntries.concat(fixtures.dropbox.responses.files$list_folder$cont[3].entries);
-    allEntries = allEntries.concat(fixtures.dropbox.responses.files$list_folder$cont[4].entries);
-
-    let files = allEntries.filter(e => e['.tag'] === 'file');
-    console.log('files', files.length);
-    var bar = new ProgressBar('Syncing :bar [:current/:total] Elapsed: :elapsed ETA: :eta',
-    {total: files.length, width: 40});
-
-    let startTime;
-    let lastTime;
-    let count = 0;
-    let http500 = 0;
-    let simulatedErrors = (files.length + 50) / 100 | 0;
-    // if simulated errors are more than a hundred, they'll cause
-    // another http500!
-    simulatedErrors += (simulatedErrors + 50) / 100 | 0;
-    var interceptor = nock('https://content.dropboxapi.com')
-    .post('/2/files/download')
-    .times(20000)
-    .reply(function(uri, requestBody) {
-      count++;
-      if (!startTime) {
-        startTime = Date.now();
-      }
-      lastTime = Date.now();
-      // https://github.com/node-nock/nock#header-field-names-are-case-insensitive
-      let req = JSON.parse(this.req.headers['dropbox-api-arg']);
-      if (req.path === undefined || typeof req.path !== 'string') {
-        throw new Error('Dropbox-API-Arg HTTP Header should be set for download/uploads.');
-      }
-      // fake a http 500 in every 100th download attempt
-      if ((count % 100) === 50) {
-        http500++;
-        return [500, 'Internval Server Error'];
-      }
-      let buf = '';
-      for (let i = 0; i < 1024; i++) {
-        buf += `${req.path}\n`;
-      }
-      return [200, buf];
-    });
-
-    let syncTasks = {};
-    let eventStats = {};
-    function eventVerifier(event, value) {
-      if (eventStats[event] === undefined)
-        eventStats[event] = 0;
-      eventStats[event]++;
-      if (event === 'sync-tasks') {
-        syncTasks = value;
-      }
-
-      if (event === 'sync-file-downloaded') {
-        bar.tick();
-      }
-    }
-    user.onAny(eventVerifier);
-
-    return user.sync().then(result => {
-      nock.removeInterceptor(interceptor);
-      user.offAny(eventVerifier);
-      let elapsed = lastTime - startTime;
-      let actualRate = result.downloads.length / elapsed * 1000 | 0;
-      t.ok(actualRate > 500, 'should support burst');
-      t.equal(http500, simulatedErrors, 'should simulate calculated amount of HTTP 500');
-      t.equal(Dropbox.stats.retries, http500, 'should retry on http 500');
-      t.equal(Dropbox.stats.completed, 7 + files.length + Dropbox.stats.retries, 'should have correct stats.completed');
-      t.deepEqual(result.downloads.length, files.length, 'should have same amount of file entries');
-      t.equal(eventStats['sync-file-downloaded'], files.length, 'should fire sync-file-downloaded');
-      t.equal(eventStats['sync-start'], 1, 'should fire sync-start once');
-      t.equal(eventStats['retry'], Dropbox.stats.retries, 'should fire retry event for each retry attempt');
-      let fail = false;
-      for (let file of syncTasks.downloads) {
-        let actual = fse.readFileSync(file.absolutePath, 'utf8');
-        let expected = '';
-        for (let i = 0; i < 1024; i++) {
-          expected += `${file.id}\n`;
-        }
-        if (actual !== expected) {
-          debug('Download error', file.absolutePath, actual, expected);
-          fail = true;
-          break;
-        }
-      }
-      t.ok(fail === false, 'should download files reliably');
-      return user;
-    });
-  })
-  .then(user => {
-    return user.getCursor(cursor => {
-      t.equal(cursor, fixtures.dropbox.responses.files$list_folder.cursor, 'should have its cursor updated');
-      return user;
-    });
-  })
-  .finally(() => {
-    rcc.restore();
-    t.end();
-    mock.restore();
+test('dropbox socket error', t => {
+  nock('https://api.dropboxapi.com')
+  .post('/2/test/socketerror')
+  .times(6)
+  .reply(function(uri, body) {
+    this.req.emit('error', 'Simulated error');
+    this.req.end();
   });
-  // test throttling
-  // test 429 handling
-  // test abrupt download cancel
-  // test files list continue
-  // test sync reliability
-  // test web hooks
-  // test web hook signature
+  return Dropbox.rpcRequest('dummyAccessToken', 'test/socketerror')
+  .then(response => {
+    t.fail('should not resolve');
+  })
+  .catch(Dropbox.RequestError, error => {
+    t.equal(error.message, 'Too many errors for request', 'should reject with Dropbox.RequestError2');
+    t.equal(Dropbox.stats.retries, Dropbox.MAX_RETRY, 'should update stats.retries');
+  })
+  .catch(error => {
+    t.fail('should only reject with Dropbox.RequestError');
+  });
+});
+
+test('dropbox on permanent (4xx) errors', t => {
+  nock('https://api.dropboxapi.com')
+  .post('/2/test/permanentError')
+  .reply(400, 'Permenant error, such as endpoint specific parameter error');
+
+  return Dropbox.rpcRequest('dummyAccessToken', 'test/permanentError')
+  .catch(Dropbox.RequestError, err => {
+    t.equal(err.message, 'HTTP Error 400: Permenant error, such as endpoint specific parameter error', 'should relay the error message');
+    t.equal(Dropbox.stats.retries, 0, 'should not retry');
+    t.equal(Dropbox.stats.errors, 1, 'should update stats.errors');
+  });
+});
+
+test('dropbox when error response stream cannot be read', t => {
+  nock('https://api.dropboxapi.com')
+  .post('/2/test/responseError')
+  .reply(400, function(uri, requestBody) {
+    return fs.createReadStream('/invalid/file');
+  });
+
+  return Dropbox.rpcRequest('dummyAccessToken', 'test/responseError')
+  .catch(Dropbox.RequestError, err => {
+    t.equal(err.message, 'Could not read error response.', 'should gracefully notify user');
+  });
+});
+
+test('dropbox throttle', t => {
+  let requests = [];
+  let i = 0;
+  nock('https://api.dropboxapi.com')
+  .post('/2/test/throttle')
+  .times(700)
+  .reply(function(uri, requestBody) {
+    requests.push(Date.now());
+    return [200, {everyting: 'is fine'}];
+  });
+
+  let requestJobs = [];
+  for (let i = 0; i < 700; i++) {
+    requestJobs.push(Dropbox.rpcRequest('foo', 'test/throttle'));
+  }
+  return Promise.all(requestJobs)
+  .then(() => {
+    process.stderr.write('\n');
+    let first600 = requests[599] - requests[0];
+    let last100 = requests[699] - requests[600];
+    t.ok(first600 < 1000, 'should do burst ' + first600);
+    t.ok(last100 > 9000, 'should slow down after burst ' + last100);
+  })
+  .catch(() => {
+    t.fail('should not cause any trouble');
+  });
 });
