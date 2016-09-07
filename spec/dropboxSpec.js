@@ -296,22 +296,8 @@ test('dropbox on permanent (4xx) errors', t => {
   });
 });
 
-test('dropbox when error response stream cannot be read', t => {
-  nock('https://api.dropboxapi.com')
-  .post('/2/test/responseError')
-  .reply(400, function(uri, requestBody) {
-    return fs.createReadStream('/invalid/file');
-  });
-
-  return Dropbox.rpcRequest('dummyAccessToken', 'test/responseError')
-  .catch(Dropbox.RequestError, err => {
-    t.equal(err.message, 'Could not read error response.', 'should gracefully notify user');
-  });
-});
-
 test('dropbox throttle', t => {
   let requests = [];
-  let i = 0;
   nock('https://api.dropboxapi.com')
   .post('/2/test/throttle')
   .times(700)

@@ -183,10 +183,6 @@ class Dropbox {
                 response.on('end', () => {
                   reject(new Dropbox.RequestError(`HTTP Error ${response.statusCode}: ${errorMessage}`, options));
                 });
-                response.on('error', error => {
-                  emit('log', 'response stream error, error');
-                  reject(new Dropbox.RequestError('Could not read error response.', options, error));
-                });
               }
             }
           }
