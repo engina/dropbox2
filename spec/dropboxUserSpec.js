@@ -1,13 +1,13 @@
 'use strict';
-
 const test = require('tape');
 const nock = require('nock');
 const mock = require('mock-fs');
 const fixtures = require('./fixtures/index');
-const ProgressBar = require('progress');
 const Promise = require('bluebird');
 const fse = Promise.promisifyAll(require('fs'));
-const rcc = require('require-cache-control');
+
+const Dropbox = require('../src/dropbox');
+const DropboxUser = require('../src/dropboxUser');
 const Throttler = require('../src/throttler');
 
 nock.disableNetConnect();
@@ -21,9 +21,8 @@ function n(endpoint, opts) {
     // verify that every request should have an access token
     reqheaders: {
       Authorization: value => {
-        if (value.startsWith('Bearer') === false ||
-            value.indexOf(fixtures.dropbox.authInfo.access_token) === -1) {
-          throw new Error('Invalid Authorization header', value);
+        if (value === ('Bearer ' + fixtures.dropbox.authInfo.access_token + '\n')) {
+          throw new Error(`Invalid Authorization header ${value}`);
         }
         return true;
       }
@@ -31,54 +30,22 @@ function n(endpoint, opts) {
   }).post('/2/' + endpoint, opts);
 }
 
-test('dropox base request method', t => {
-  rcc.snapshot();
-  const Dropbox = require('../src/dropbox');
-  let test1msg = 'should reject when no access token is present';
-  let test1 = Dropbox.rawRequest({})
-  .then(() => {
-    t.fail(test1msg);
-  })
-  .catch(Dropbox.RequestError, err => {
-    t.equal(err.message, 'Access token is required.', test1msg);
-  });
-
-  let test2msg = 'should reject when upload and download parameters are used at the same time';
-  let test2 = Dropbox.rawRequest({
-    accessToken: 'foo',
-    download: 'path',
-    upload: 'path'
-  })
-  .then(() => {
-    t.fail(test2msg);
-  })
-  .catch(Dropbox.RequestError, err => {
-    t.equal(err.message, 'You cannot upload and download at the same time.', test2msg);
-  });
-
-  Promise.all([test1, test2])
-  .finally(() => {
-    rcc.restore();
-    t.end();
-  });
-});
-
-test('dropbox error handling', t => {
+test('dropboxUser error handling', t => {
   mock();
-  rcc.snapshot();
-  const Dropbox = require('../src/dropbox');
   let testMessage = 'should throw exception with invalid account id';
   try {
-    new Dropbox('../../sensitive_directory');
-    t.fail(testMessage);
+    let user = new DropboxUser('../../sensitive_directory');
+    if (user)
+      t.fail(testMessage);
   } catch (err) {
     t.equal(err.message, 'Account id must be a string of 40 characters.', testMessage);
   }
 
   testMessage = 'should throw exception with empty account id';
   try {
-    new Dropbox('');
-    t.fail(testMessage);
+    let user = new DropboxUser('');
+    if (user)
+      t.fail(testMessage);
   } catch (err) {
     t.equal(err.message, 'Account id must be a string of 40 characters.', testMessage);
   }
@@ -87,7 +54,7 @@ test('dropbox error handling', t => {
   .reply(200, fixtures.dropbox.responses.users$get_account_fail);
 
   testMessage = 'should reject for non verified email';
-  Dropbox.create(fixtures.dropbox.authInfo)
+  DropboxUser.create(fixtures.dropbox.authInfo)
   .then(() => {
     t.fail(testMessage);
   })
@@ -97,23 +64,18 @@ test('dropbox error handling', t => {
   .finally(() => {
     t.end();
     mock.restore();
-    rcc.restore();
   });
 });
 
 test('dropbox test suite #1 sync ~600 files', t => {
-  rcc.snapshot();
-  const Dropbox = require('../src/dropbox');
   mock(fixtures.fs);
-  Dropbox.events.onAny((event, value) => {
-    // debug('dropbox static event', event, value);
-  });
   // test create
   n('users/get_account')
   .reply(200, fixtures.dropbox.responses.users$get_account);
 
-  Dropbox.create(fixtures.dropbox.authInfo)
+  DropboxUser.create(fixtures.dropbox.authInfo)
   .then(user => {
+    t.equal(user.stats.completed, 0, 'should have zero instance stats.complete');
     return user.getWhois().then(result => {
       t.deepEqual(result, fixtures.dropbox.responses.users$get_account, 'should save whois information');
       return user;
@@ -128,31 +90,22 @@ test('dropbox test suite #1 sync ~600 files', t => {
   .then(user => {
     return user.getCursor()
     .then(cursor => {
-      t.fail('should reject when asked for cursor, when there is none');
-    })
-    .catch(err => {
-      t.equal(err.code, 'ENOENT', 'should reject with ENOENT');
+      t.equal(cursor, null, 'should return null for a cursor since this is the first run');
       return user;
     });
   })
   .then(user => {
-    t.deepEqual(Dropbox.stats, {
-      flight: 0,
-      pending: 0,
-      completed: 1,
-      errors: 0,
-      retries: 0
-    }, 'should have correct request stats');
-    return user;
-  })
-  .then(user => {
-    return Dropbox.list().then(userList => {
+    return DropboxUser.list().then(userList => {
       t.deepEqual(userList, [fixtures.dropbox.authInfo.account_id], 'should list created users');
       return user;
     });
   })
   .then(user => {
     t.equal(user.toString(), `DropboxUser ${fixtures.dropbox.authInfo.account_id}`, 'should have meaningful toString()');
+    return user;
+  })
+  .then(user => {
+    t.equal(user.stats.completed, 0, 'should have zero instance stats.complete');
     return user;
   })
   .then(user => {
@@ -169,7 +122,6 @@ test('dropbox test suite #1 sync ~600 files', t => {
               'should return correct cursor value');
       t.ok(result.has_more === undefined, 'should not have has_more property');
       t.equal(user.stats.completed, 1, 'should have instance stats.completed = 1');
-      t.equal(Dropbox.stats.completed, 1, 'should have static stats.completed = 1');
       return user;
     });
   })
@@ -179,8 +131,6 @@ test('dropbox test suite #1 sync ~600 files', t => {
     // this is the test data
     let allEntries = fixtures.dropbox.responses.files$list_folder.entries;
     let files = allEntries.filter(e => e['.tag'] === 'file');
-    var bar = new ProgressBar('Syncing :bar [:current/:total] Elapsed: :elapsed ETA: :eta',
-    {total: files.length, width: 40});
 
     let startTime;
     let lastTime;
@@ -222,10 +172,6 @@ test('dropbox test suite #1 sync ~600 files', t => {
       if (event === 'sync-tasks') {
         syncTasks = value;
       }
-
-      if (event === 'sync-file-downloaded') {
-        bar.tick();
-      }
     }
     user.onAny(eventVerifier);
 
@@ -236,8 +182,6 @@ test('dropbox test suite #1 sync ~600 files', t => {
       t.ok(actualRate > 500, 'should support burst');
       t.equal(http500, simulatedErrors, 'should simulate calculated amount of HTTP 500');
       t.equal(user.stats.retries, http500, 'should retry on http 500');
-      // one call is from static Dropbox method users/get_account
-      t.equal(Dropbox.stats.completed, 1, 'should have static stats.completed = 1');
       // two calls to files/list_folder and then download requests
       t.equal(user.stats.completed, 2 + files.length, 'should have stats.completed');
       t.deepEqual(result.downloads.length, files.length, 'should have same amount of file entries');
@@ -267,37 +211,26 @@ test('dropbox test suite #1 sync ~600 files', t => {
       return user;
     });
   })
+  .catch(Dropbox.RequestError, error => {
+    t.fail('should not reject with unexcepted error');
+    console.log(error);
+  })
   .finally(() => {
-    rcc.restore();
     t.end();
     mock.restore();
   });
-  // test throttling
-  // test 429 handling
-  // test abrupt download cancel
-  // test files list continue
-  // test sync reliability
   // test web hooks
   // test web hook signature
 });
 
 test('dropbox test suite #2 sync 10k files', t => {
-  rcc.snapshot();
-  const Dropbox = require('../src/dropbox');
-  t.deepEqual(Dropbox.stats, {
-    flight   : 0,
-    pending  : 0,
-    completed: 0,
-    errors   : 0,
-    retries  : 0
-  });
   // disable throttler, we'll test the throttler later
   Dropbox.THROTTLER = new Throttler(60000, 60000);
   mock(fixtures.fs);
   n('users/get_account')
   .reply(200, fixtures.dropbox.responses.users$get_account);
 
-  Dropbox.create(fixtures.dropbox.authInfo)
+  DropboxUser.create(fixtures.dropbox.authInfo)
   .then(user => {
     return user.getWhois().then(result => {
       t.deepEqual(result, fixtures.dropbox.responses.users$get_account, 'should save whois information');
@@ -330,8 +263,7 @@ test('dropbox test suite #2 sync 10k files', t => {
     allEntries = allEntries.concat(fixtures.dropbox.responses.files$list_folder$cont[4].entries);
 
     let files = allEntries.filter(e => e['.tag'] === 'file');
-    var bar = new ProgressBar('Syncing :bar [:current/:total] Elapsed: :elapsed ETA: :eta',
-    {total: files.length, width: 40});
+    let folders = allEntries.filter(e => e['.tag'] === 'folder');
 
     let startTime;
     let lastTime;
@@ -376,25 +308,17 @@ test('dropbox test suite #2 sync 10k files', t => {
       if (event === 'sync-tasks') {
         syncTasks = value;
       }
-
-      if (event === 'sync-file-downloaded') {
-        bar.tick();
-      }
     }
     user.onAny(eventVerifier);
-
     return user.sync().then(result => {
       user.offAny(eventVerifier);
-      let elapsed = lastTime - startTime;
-      let actualRate = result.downloads.length / elapsed * 1000 | 0;
-      t.ok(actualRate > 500, 'should support burst');
       t.equal(http500, simulatedErrors, 'should simulate calculated amount of HTTP 500');
       t.equal(user.stats.retries, http500, 'should retry on http 500');
-      t.equal(user.stats.completed, 7 + files.length + user.stats.retries, 'should have correct stats.completed');
+      // 6 calls to files/list_folder + downloads
+      t.equal(user.stats.completed, 6 + files.length, 'should have correct stats.completed');
       t.deepEqual(result.downloads.length, files.length, 'should have same amount of file entries');
       t.equal(eventStats['sync-file-downloaded'], files.length, 'should fire sync-file-downloaded');
       t.equal(eventStats['sync-start'], 1, 'should fire sync-start once');
-      console.log(Dropbox.stats);
       t.equal(eventStats['retry'], user.stats.retries, 'should fire retry event for each retry attempt');
       let fail = false;
       for (let file of syncTasks.downloads) {
@@ -410,6 +334,43 @@ test('dropbox test suite #2 sync 10k files', t => {
         }
       }
       t.ok(fail === false, 'should download files reliably');
+      t.equal(syncTasks.folders.length, folders.length, 'should extract folders from the delta');
+      let dirFail = false;
+      for (let folder of syncTasks.folders) {
+        if (!fse.statSync(folder.absolutePath).isDirectory()) {
+          dirFail = true;
+        }
+      }
+      t.ok(dirFail === false, 'should create the directorties');
+      return user;
+    });
+  })
+  .then(user => {
+    n('files/list_folder/continue', body => body.cursor === fixtures.dropbox.responses.files$list_folder$cont[4].cursor)
+    .reply(200, fixtures.dropbox.responses.files$list_folder$cont[5]);
+
+    n('files/list_folder/continue', body => body.cursor === fixtures.dropbox.responses.files$list_folder$cont[5].cursor)
+    .reply(200, fixtures.dropbox.responses.files$list_folder$cont[6]);
+
+    n('files/list_folder/continue', body => body.cursor === fixtures.dropbox.responses.files$list_folder$cont[6].cursor)
+    .reply(200, fixtures.dropbox.responses.files$list_folder$cont[7]);
+
+    // do not delete files with 1xxx.txt name. Should 1000 of them.
+    let syncFilter = file => !/1\d{3}\.txt/i.test(file.name);
+    return user.sync(syncFilter).then(result => {
+      t.equal(result.deletes.length, 3500, 'should extract delete information from delta with filter');
+      let deleteFail = false;
+      for (let deleted of result.deletes) {
+        try {
+          fse.statSync(deleted.absolutePath);
+          deleteFail = true;
+        } catch (error) {
+          if (error.code !== 'ENOENT') {
+            deleteFail = true;
+          }
+        }
+      }
+      t.ok(deleteFail === false, 'should delete the files');
       return user;
     });
   })
@@ -420,56 +381,62 @@ test('dropbox test suite #2 sync 10k files', t => {
     });
   })
   .finally(() => {
-    rcc.restore();
     t.end();
     mock.restore();
   });
-  // test throttling
-  // test 429 handling
-  // test abrupt download cancel
-  // test web hooks
-  // test web hook signature
 });
 
-test('dropbox upload', t => {
-  return t.end();
-  rcc.snapshot();
-  const Dropbox = require('../src/dropbox');
-  let testFileBuffer = new Buffer(100 * 1024);
-  for (let i = 0; i < testFileBuffer.length; i++) {
-    testFileBuffer.writeUInt8(i % 256);
-  }
+test('dropboxUser sync concurrency support', t => {
+  mock(fixtures.fs);
+  // test create
+  n('users/get_account')
+  .reply(200, fixtures.dropbox.responses.users$get_account);
 
-  mock({
-    '/home/john/foo.txt': testFileBuffer
-  });
+  n('files/list_folder')
+  .reply(200, fixtures.dropbox.responses.files$list_folder);
+  let files = fixtures.dropbox.responses.files$list_folder.entries.filter(e => e['.tag'] === 'file');
 
-  nock('https://content.dropboxapi.com', {
-    reqheaders: {
-      'dropbox-api-args': value => {
-        let args = JSON.parse(value);
-        return args.path !== undefined && typeof args.path === 'string';
-      }
+  nock('https://content.dropboxapi.com')
+  .post('/2/files/download')
+  .times(files.length)
+  .reply(200, ['hello']);
+
+  n('files/list_folder/continue', body => body.cursor === fixtures.dropbox.responses.files$list_folder.cursor)
+  .reply(200, fixtures.dropbox.responses.files$list_folder$cont[8]);
+
+  DropboxUser.create(fixtures.dropbox.authInfo)
+  .then(user => {
+    let sync1 = user.sync();
+    let sync2 = user.sync();
+    return Promise.all([sync1, sync2])
+    .then(([result1, result2]) => {
+      t.equal(result1.downloads.length, files.length, 'should should do sync operations sequentially');
+      t.equal(result2.downloads.length, 0, 'should return second sync result as empty');
+      return user;
+    });
+  })
+  .then(user => {
+    nock('https://api.dropboxapi.com')
+    .post('/2/files/list_folder/continue')
+    .times(DropboxUser.MAX_SYNC_QUEUE + 1)
+    .reply(200, fixtures.dropbox.responses.files$list_folder$cont[8]);
+    for (let i = 0; i < DropboxUser.MAX_SYNC_QUEUE; i++) {
+      user.sync();
     }
+    return user.sync()
+    .then(() => {
+      t.fail('should throw SyncError');
+    })
+    .catch(DropboxUser.SyncError, error => {
+      t.pass('should throw SyncError');
+    });
   })
-  .post('/2/files/upload', body => {
-    t.ok(Buffer.compare(testFileBuffer, body), 'should send file correctly');
+  .catch(error => {
+    console.log(error);
+    t.fail('should not fail');
   })
-  .times(2);
-  let isStream = require('is-stream');
-  let upload = fse.createReadStream('/home/john/foo.txt');
-  t.equal(isStream.readable(upload), true, 'should be read stream');
-  let test1 = Dropbox.upload('<access token>', '/home/john/foo.txt', {mode: 'overwrite'});
-  let test2 = Dropbox.upload('<access token>', upload);
-  Promise.all([test1, test2])
   .finally(() => {
     mock.restore();
-    rcc.restore();
     t.end();
   });
-});
-
-test.only('disable', t => {
-  t.ok(true);
-  t.end();
 });

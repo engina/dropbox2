@@ -1,3 +1,5 @@
+'use strict';
+
 const Promise   = require('bluebird');
 const request   = require('request');
 const fs        = require('fs');
@@ -5,6 +7,19 @@ const https     = require('https');
 const Throttler = require('./throttler');
 const isStream  = require('is-stream');
 const EventEmitter2 = require('eventemitter2').EventEmitter2;
+
+/**
+ * @internal
+ */
+class Retry extends Error {
+  constructor(options, emit, stats, delay = 0) {
+    super('Retry request');
+    this.options = options;
+    this.emit    = emit;
+    this.stats   = stats;
+    this.delay   = delay;
+  }
+}
 
 /**
  * Represents a Dropbox User that authorized our app.
@@ -67,7 +82,7 @@ class Dropbox {
    * @return {Promise} Resolves with the response body (for rpcRequests)
    * Rejects with {Dropbox.RequestError}
    */
-  static rawRequest(options, emit = Dropbox.events.emit.bind(Dropbox.events), stats = Dropbox.stats) {
+  static rawRequest(options, emit = Dropbox.DefaultEmitter, stats = Dropbox.stats) {
     if (!options.accessToken) {
       return Promise.reject(new Dropbox.RequestError('Access token is required.', options));
     }
@@ -93,6 +108,8 @@ class Dropbox {
         if (options.retry > 0) {
           emit('log', 'retry request actually sent now', options);
         }
+
+        // rawRequest option defaults
         let defaults = {
           accessToken: null,
           uri: null,
@@ -107,6 +124,7 @@ class Dropbox {
         };
         options = Object.assign(defaults, options);
 
+        // prepare request options
         let requestOptions = {
           uri: options.uri,
           headers: {
@@ -161,8 +179,7 @@ class Dropbox {
                 options.retry++;
                 stats.retries++;
                 // Maybe also adjust our rate limiter
-                return resolve(Promise.delay(wait * 1000)
-                              .then(() => Dropbox.rawRequest(options)));
+                return reject(new Retry(options, emit, stats, wait * 1000));
               }
               case 500: {
                 // We got a HTTP statuc error code and this is not rate limiting
@@ -173,7 +190,7 @@ class Dropbox {
                 emit('retry', 'Attempting to retry due to HTTP 500', options);
                 options.retry++;
                 stats.retries++;
-                return resolve(Dropbox.rawRequest(options));
+                return reject(new Retry(options, emit, stats));
               }
               default: {
                 let errorMessage = '';
@@ -209,7 +226,8 @@ class Dropbox {
           options.retry++;
           stats.retries++;
           emit('retry', 'Attempting to retrying due to socket error');
-          resolve(Dropbox.rawRequest(options));
+          // resolve(Dropbox.rawRequest(options, emit, stats));
+          reject(new Retry(options, emit, stats));
         })
         .on('complete', (response, body) => {
           resolve(body);
@@ -218,6 +236,10 @@ class Dropbox {
       .then(result => {
         stats.completed++;
         return result;
+      })
+      .catch(Retry, retry => {
+        return Promise.delay(retry.delay)
+        .then(() => Dropbox.rawRequest(retry.options, retry.emit, retry.stats));
       })
       .catch(e => {
         stats.errors++;
@@ -228,6 +250,17 @@ class Dropbox {
         stats.flight--;
       });
     });
+  }
+
+  static initStats(from = {}) {
+    let stat = {
+      flight   : 0,
+      pending  : 0,
+      completed: 0,
+      errors   : 0,
+      retries  : 0
+    };
+    return Object.assign(stat, from);
   }
 
   /**
@@ -242,7 +275,7 @@ class Dropbox {
    * @param {any} [emit=Dropbox.events.emit.bind(Dropbox.events)]
    * @return {Promise} See rawRequest
    */
-  static rpcRequest(accessToken, endpoint, parameters, emit = Dropbox.events.emit.bind(Dropbox.events), stats = Dropbox.stats) {
+  static rpcRequest(accessToken, endpoint, parameters = {}, emit = Dropbox.DefaultEmitter, stats = Dropbox.stats) {
     let options = {
       uri: 'https://api.dropboxapi.com/2/' + endpoint,
       accessToken: accessToken,
@@ -274,7 +307,7 @@ class Dropbox {
    * @param {object} options Dropbox options
    * @return {Promise} A promise that resolves to destionation stream
    */
-  static download(accessToken, src, dst, parameters = {}, emit = Dropbox.events.emit.bind(Dropbox.events), stats = Dropbox.stats) {
+  static download(accessToken, src, dst, parameters = {}, emit = Dropbox.DefaultEmitter, stats = Dropbox.stats) {
     parameters.path = src;
     let options = {
       uri: 'https://content.dropboxapi.com/2/files/download',
@@ -295,7 +328,7 @@ class Dropbox {
    * @param {object} parameters Dropbox options
    * @return {Promise} A promise that resolves to undefined
    */
-  static upload(accessToken, src, dstPath, parameters = {}, emit = Dropbox.events.emit.bind(Dropbox.events), stats = Dropbox.stats) {
+  static upload(accessToken, src, dstPath, parameters = {}, emit = Dropbox.DefaultEmitter, stats = Dropbox.stats) {
     parameters.path = dstPath;
     let options = {
       uri: 'https://content.dropboxapi.com/2/files/upload',
@@ -306,12 +339,6 @@ class Dropbox {
     return Dropbox.rawRequest(options, emit, stats);
   }
 }
-
-/**
- * User's files will be synced to a folder in this one.
- * @static
- */
-Dropbox.USERS_DIR = 'Dropboxs';
 
 /**
  * Throttles HTTP API requests per account id.
@@ -364,6 +391,8 @@ Dropbox.RequestError = class RequestError extends Error {
  * @static
  */
 Dropbox.events = new EventEmitter2();
+
+Dropbox.DefaultEmitter = Dropbox.events.emit.bind(Dropbox.events);
 
 Dropbox.stats = {};
 

@@ -1,8 +1,15 @@
-const path      = require('path');
-const fse       = Promise.promisifyAll(require('fs-extra'));
-const Dropbox = require('./dropbox');
+'use strict';
 
-class DropboxUser extends Dropbox {
+const path    = require('path');
+const Promise = require('bluebird');
+const fse     = Promise.promisifyAll(require('fs-extra'));
+const Dropbox = require('./dropbox');
+const EventEmitter2 = require('eventemitter2');
+
+class DropboxUser extends EventEmitter2 {
+  toString() {
+    return `${this.constructor.name} ${this.accountId}`;
+  }
   /**
    * Creates directory structure for a user in the DropboxUser.USERS_DIR folder.
    *
@@ -29,7 +36,7 @@ class DropboxUser extends Dropbox {
   static create(authInfo) {
     let newUserDir = path.join(DropboxUser.USERS_DIR, authInfo.account_id);
     let userWhois;
-    return this.rpcRequest(authInfo.access_token, 'users/get_account', {account_id: authInfo.account_id})
+    return Dropbox.rpcRequest(authInfo.access_token, 'users/get_account', {account_id: authInfo.account_id})
     .then(result => {
       if (!result.email_verified) {
         throw new Error('Dropbox user email not verified');
@@ -73,18 +80,26 @@ class DropboxUser extends Dropbox {
     // Count of the queued sync operations
     this.depth = 0;
 
-    this.stats = {
-      flight   : 0,
-      pending  : 0,
-      completed: 0,
-      errors   : 0,
-      retries  : 0
-    };
+    this.stats = {};
+    Object.keys(Dropbox.stats).forEach(stat => {
+      this.stats[stat] = 0;
+    });
   }
 
+  /**
+   * @return {Promise<string>} The last saved cursor, null if there is none.
+   */
   getCursor() {
-    return fse.readFileAsync(this.cursorFile, 'utf8');
+    return fse.readFileAsync(this.cursorFile, 'utf8')
+    .catch(error => {
+      if (error.code !== undefined && error.code === 'ENOENT') {
+        return null;
+      }
+      // Unexpected error, re-throw
+      throw error;
+    });
   }
+
   /**
    * {
    *   "account_id": "string",
@@ -106,7 +121,8 @@ class DropboxUser extends Dropbox {
     return fse.readFileAsync(this.whoisFile, 'utf8')
     .then(whoisRaw => JSON.parse(whoisRaw));
   }
-    /**
+
+  /**
    * Reads, parse and returns auth object. In the following format.
    *
    * {
@@ -132,9 +148,6 @@ class DropboxUser extends Dropbox {
     return this.authCache;
   }
 
-
-
-
   /**
    * @static
    * @return {Array} A list of strings of account ids for the users created via
@@ -156,19 +169,19 @@ class DropboxUser extends Dropbox {
    */
   rpcRequest(endpoint, parameters) {
     return this.getAuth()
-    .then(({access_token}) => DropboxUser.rpcRequest(access_token, endpoint, parameters, this.emit.bind(this), this.stats));
+    .then(({access_token}) => Dropbox.rpcRequest(access_token, endpoint, parameters, this.emit.bind(this), this.stats));
   }
 
   download(src, dstPath, parameters = {}) {
     return this.getAuth()
-    .then(({access_token}) => DropboxUser.download(access_token, src, dstPath, parameters, this.emit.bind(this), this.stats));
+    .then(({access_token}) => Dropbox.download(access_token, src, dstPath, parameters, this.emit.bind(this), this.stats));
   }
 
 
   upload(src, dstPath, parameters = {}) {
     this.emit('log', 'uploading shit');
     return this.getAuth()
-    .then(({access_token}) => DropboxUser.upload(access_token, src, dstPath, parameters, this.emit.bind(this), this.stats));
+    .then(({access_token}) => Dropbox.upload(access_token, src, dstPath, parameters, this.emit.bind(this), this.stats));
   }
 
   /**
@@ -196,7 +209,7 @@ class DropboxUser extends Dropbox {
    */
   sync(filter = () => true, timeout = 2147483647) {
     // Prevent backlogging
-    if (this.depth > 10) {
+    if (this.depth >= DropboxUser.MAX_SYNC_QUEUE) {
       return Promise.reject(new DropboxUser.SyncError('Too many sync operations queued.'));
     }
     this.depth++;
@@ -301,7 +314,13 @@ class DropboxUser extends Dropbox {
        * makes you think) to stop throttler to queue new requests into the https.Agent's pool.
        * 2. AND call https.Agent.destroy() to destroy all remaining sockets.
        *
+       * or
+       *
+       * Manage a user space queue that we can wipe out anytime.
+       *
        * This corner case is not covered yet.
+       *
+       * But it's more of a nuisance as it does not result in operational failure but just waste of resources.
        */
       throw e;
     })
@@ -388,16 +407,7 @@ class DropboxUser extends Dropbox {
         return cursor;
       }
       // Cursor is not provided, read from saved cursor file
-      return this.getCursor()
-      .then(cursor => this.rpcRequest('files/list_folder/continue', {cursor: cursor}))
-      .catch(error => {
-        if (error.code !== undefined && error.code === 'ENOENT') {
-          // We don't have a cursor yet, so returning null.
-          return null;
-        }
-        // There's an unexpected error, re-throw it
-        throw error;
-      });
+      return this.getCursor();
     })
     .then(cursor => {
       // Either user provided a null pointer or cursor file reading failed (probably
@@ -406,11 +416,15 @@ class DropboxUser extends Dropbox {
       if (cursor === null) {
         return this.rpcRequest('files/list_folder', {path: '', recursive: true});
       }
+      return this.rpcRequest('files/list_folder/continue', {cursor: cursor});
     })
     // Fetch more results if necessary (if result.has_more is true) by recursing
     .then(result => this._recurseDelta(result));
   }
 }
+
+
+DropboxUser.USERS_DIR = 'dropboxUsers';
 
 DropboxUser.MAX_SYNC_QUEUE = 10;
 

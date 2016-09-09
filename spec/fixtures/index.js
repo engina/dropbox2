@@ -7,6 +7,10 @@ const list_folder$continue_2 = require('./files$list_folder$continue_2.json');
 const list_folder$continue_3 = require('./files$list_folder$continue_3.json');
 const list_folder$continue_4 = require('./files$list_folder$continue_4.json');
 const list_folder$continue_5 = require('./files$list_folder$continue_5.json');
+const list_folder$continue_6 = require('./files$list_folder$continue_6.json');
+const list_folder$continue_7 = require('./files$list_folder$continue_7.json');
+const list_folder$continue_8 = require('./files$list_folder$continue_8.json');
+const list_folder$continue_9 = require('./files$list_folder$continue_9_empty.json');
 
 module.exports.dropbox = {
   authInfo: {
@@ -49,7 +53,11 @@ module.exports.dropbox = {
       list_folder$continue_2,
       list_folder$continue_3,
       list_folder$continue_4,
-      list_folder$continue_5
+      list_folder$continue_5,
+      list_folder$continue_6,
+      list_folder$continue_7,
+      list_folder$continue_8,
+      list_folder$continue_9
     ]
   }
 };

@@ -1,24 +1,28 @@
-//const mock = require('mock-fs');
+'use strict';
+
 const tape = require('tape');
 const nock = require('nock');
-const fixtures = require('./fixtures/index');
 const Promise = require('bluebird');
 const fs  = Promise.promisifyAll(require('fs'));
-const rcc = require('require-cache-control');
 
 // Will be freshly loaded for each test
 let Dropbox;
 
 nock.disableNetConnect();
+const Util = require('util');
+console.log('initial cache',
+  Util.inspect(
+    Object.keys(require.cache).filter(key => key.indexOf('src/dropbox') !== -1),
+    {maxArrayLength: 500}
+  )
+);
 
-rcc.snapshot();
 // Test wrapper
 function test(testName, testBody, testFunction = tape) {
   // Run the test via tape
   testFunction(testName, t => {
-    //mock();
+    // mock();
     nock.cleanAll();
-    rcc.restore();
     Dropbox = require('../src/dropbox');
     Dropbox.events.on('log', (msg, options, error) => {
       // console.log(`LOG [${testName}]`, msg, options, error);
@@ -29,7 +33,7 @@ function test(testName, testBody, testFunction = tape) {
       throw new Error(`Test '${testName}' does not return a blurbird promise.`);
     }
     testResult.finally(() => {
-      //mock.restore();
+      // mock.restore();
       t.end();
     });
   });
@@ -219,6 +223,7 @@ test('dropbox on HTTP 429 Error', t => {
     if (requests.length <= Dropbox.MAX_RETRY) {
       return [429, {message: 'Rate limited'}, {'retry-after': WAIT}];
     }
+    process.stderr.write('\n');
     return [200, {message: 'ok'}];
   });
 
@@ -226,7 +231,8 @@ test('dropbox on HTTP 429 Error', t => {
   Dropbox.events.on('retry', () => {
     retry++;
   });
-  return Dropbox.rpcRequest('dummyAccessToken', 'test/endpoint')
+  let stats = Dropbox.initStats();
+  return Dropbox.rpcRequest('dummyAccessToken', 'test/endpoint', {}, Dropbox.DefaultEmitter, stats)
   .then(response => {
     t.equal(retry, Dropbox.MAX_RETRY, 'should emit rate-limited events');
     let elapsed = requests[Dropbox.MAX_RETRY] - requests[0];
@@ -237,7 +243,8 @@ test('dropbox on HTTP 429 Error', t => {
     t.equal(response.message, 'ok', 'should get the response after retries');
   })
   .finally(() => {
-    t.equal(Dropbox.stats.retries, Dropbox.MAX_RETRY, 'should update stats.retries');
+    t.equal(stats.retries, Dropbox.MAX_RETRY, 'should update stats.retries');
+    t.equal(stats.completed, 1, 'should not include retries in the stats.completed');
   });
 });
 
@@ -247,7 +254,8 @@ test('dropbox on too many retries', t => {
   .times(6)
   .reply(500, 'Interval Server Error');
 
-  return Dropbox.rpcRequest('dummyAccessToken', 'test/endpoint')
+  let stats = Dropbox.initStats();
+  return Dropbox.rpcRequest('dummyAccessToken', 'test/endpoint', {}, Dropbox.DefaultEmitter, stats)
   .then(response => {
     t.fail('should not resolve');
   })
@@ -255,10 +263,11 @@ test('dropbox on too many retries', t => {
     t.equal(error.message, 'Too many errors for request', 'should reject with Dropbox.RequestError');
   })
   .catch(error => {
+    console.log(error);
     t.fail('should only reject with Dropbox.RequestError');
   })
   .finally(() => {
-    t.equal(Dropbox.stats.retries, Dropbox.MAX_RETRY, 'should update stats.retries');
+    t.equal(stats.retries, Dropbox.MAX_RETRY, 'should update stats.retries');
   });
 });
 
@@ -288,11 +297,12 @@ test('dropbox on permanent (4xx) errors', t => {
   .post('/2/test/permanentError')
   .reply(400, 'Permenant error, such as endpoint specific parameter error');
 
-  return Dropbox.rpcRequest('dummyAccessToken', 'test/permanentError')
+  let stats = Dropbox.initStats();
+  return Dropbox.rpcRequest('dummyAccessToken', 'test/permanentError', {}, Dropbox.DefaultEmitter, stats)
   .catch(Dropbox.RequestError, err => {
     t.equal(err.message, 'HTTP Error 400: Permenant error, such as endpoint specific parameter error', 'should relay the error message');
-    t.equal(Dropbox.stats.retries, 0, 'should not retry');
-    t.equal(Dropbox.stats.errors, 1, 'should update stats.errors');
+    t.equal(stats.retries, 0, 'should not retry');
+    t.equal(stats.errors, 1, 'should update stats.errors');
   });
 });
 
@@ -302,6 +312,7 @@ test('dropbox throttle', t => {
   .post('/2/test/throttle')
   .times(700)
   .reply(function(uri, requestBody) {
+    process.stderr.write('.');
     requests.push(Date.now());
     return [200, {everyting: 'is fine'}];
   });
@@ -316,7 +327,7 @@ test('dropbox throttle', t => {
     let first600 = requests[599] - requests[0];
     let last100 = requests[699] - requests[600];
     t.ok(first600 < 1000, 'should do burst ' + first600);
-    t.ok(last100 > 9000, 'should slow down after burst ' + last100);
+    t.ok(last100 > 8000, 'should slow down after burst ' + last100);
   })
   .catch(() => {
     t.fail('should not cause any trouble');
