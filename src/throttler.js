@@ -11,7 +11,7 @@ class Throttler {
   }
 
   throttle(key) {
-    key = key || 'default;'
+    key = key || 'default';
     return new Promise((resolve, reject) => {
       this.throttleCallback(key, resolve);
     });

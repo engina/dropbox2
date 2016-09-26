@@ -2,7 +2,14 @@
   "name": "dropbox2",
   "version": "0.0.1",
   "description": "The unofficial Dropbox SDK",
-  "main": "src/dropbox.js",
+  "bin": {
+    "dropbox": "src/cli.js"
+  },
+  "main": "index.js",
+  "files": [
+    "src/",
+    "index.js"
+  ],
   "scripts": {
     "test": "node_modules/istanbul/lib/cli.js cover -x 'spec/**/*' node_modules/tape/bin/tape -- spec/*Spec.js"
   },
@@ -17,10 +24,6 @@
     "url": "https://github.com/engina/dropbox2/issues"
   },
   "homepage": "https://github.com/engina/dropbox2#readme",
-  "files": [
-    "src/",
-    "index.js"
-  ],
   "devDependencies": {
     "eslint": "^3.4.0",
     "eslint-config-google": "^0.6.0",
@@ -46,6 +49,7 @@
     "fs-extra": "^0.30.0",
     "is-stream": "^1.1.0",
     "limiter": "^1.1.0",
+    "progress": "^1.1.8",
     "request": "^2.74.0",
     "yargs": "^5.0.0"
   }
