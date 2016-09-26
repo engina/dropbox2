@@ -40,7 +40,8 @@ class Sync extends EventEmitter2 {
   }
 
   /**
-   * @return {Promise<string>} The last saved cursor, null if there is none.
+   * @return {Promise<string\null>} The last saved cursor, null if there is none.
+   * @rejects {Error} If an unexpected file system error occurs.
    */
   getCursor() {
     return fse.readFileAsync(this.cursorFile, 'utf8')
@@ -269,12 +270,10 @@ class Sync extends EventEmitter2 {
   /**
    * Returns a delta since the last cursor.
    *
-   * Cursor file is located in DropboxUser.USERS_DIR/{accountId}/cursor
-   *
    * This method does not update the cursor file itself. It's user's responsibility
    * to update the cursor file, possible after completing a task (such as sync) succesfully.
    *
-   * Once the caller of this method (@see DropboxUser.sync()) saves the returned cursor, the next call to
+   * Once the caller of this method {@link Sync#sync} saves the returned cursor, the next call to
    * delta will return the changes from that cursor and the entries returned in the
    * current call will be lost.
    * @param {string}  cursor Last cursor to get the delta from. null if you don't have a cursor
