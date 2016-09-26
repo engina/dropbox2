@@ -40,7 +40,7 @@ class Sync extends EventEmitter2 {
   }
 
   /**
-   * @return {Promise<string\null>} The last saved cursor, null if there is none.
+   * @return {Promise<string, null>} The last saved cursor, null if there is none.
    * @rejects {Error} If an unexpected file system error occurs.
    */
   getCursor() {
