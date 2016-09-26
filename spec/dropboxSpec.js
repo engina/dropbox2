@@ -11,7 +11,8 @@ let Dropbox;
 nock.disableNetConnect();
 
 // Test wrapper
-function test(testName, testBody, testFunction = tape) {
+function test(testName, testBody, testFunction) {
+  testFunction = testFunction || tape;
   // Run the test via tape
   testFunction(testName, t => {
     // mock();

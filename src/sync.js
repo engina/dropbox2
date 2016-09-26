@@ -86,15 +86,15 @@ class Sync extends EventEmitter2 {
     .then(accessToken => Dropbox.rpcRequest(accessToken, endpoint, parameters, this.emit.bind(this), this.stats));
   }
 
-  download(src, dstPath, parameters = {}) {
+  download(src, dstPath, parameters) {
     return this.getAccessToken()
-    .then(accessToken => Dropbox.download(accessToken, src, dstPath, parameters, this.emit.bind(this), this.stats));
+    .then(accessToken => Dropbox.download(accessToken, src, dstPath, parameters || {}, this.emit.bind(this), this.stats));
   }
 
 
-  upload(src, dstPath, parameters = {}) {
+  upload(src, dstPath, parameters) {
     return this.getAccessToken()
-    .then(accessToken => Dropbox.upload(accessToken, src, dstPath, parameters, this.emit.bind(this), this.stats));
+    .then(accessToken => Dropbox.upload(accessToken, src, dstPath, parameters || {}, this.emit.bind(this), this.stats));
   }
 
   /**
@@ -114,7 +114,10 @@ class Sync extends EventEmitter2 {
         ignored  : <array of file entries that are ignored>
       }
    */
-  sync(filter = () => true) {
+  sync(filter) {
+    if (filter === undefined) {
+      filter = () => true;
+    }
     // Data that needs to be passed between some distant thens
     let delta;
     let folders   = [];
@@ -308,7 +311,7 @@ class Sync extends EventEmitter2 {
 }
 
 Sync.Error = class SyncError extends Error {
-  constructor(msg, native = null) {
+  constructor(msg, native) {
     super(msg);
     this.native = native;
   }

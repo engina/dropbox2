@@ -12,12 +12,12 @@ const EventEmitter2 = require('eventemitter2').EventEmitter2;
  * @private
  */
 class Retry extends Error {
-  constructor(options, emit, stats, delay = 0) {
+  constructor(options, emit, stats, delay) {
     super('Retry request');
     this.options = options;
     this.emit    = emit;
     this.stats   = stats;
-    this.delay   = delay;
+    this.delay   = delay || 0;
   }
 }
 
@@ -72,7 +72,9 @@ class Dropbox {
    * @return {Promise<Object>} Resolves with the response body (for rpcRequests)
    * Rejects with {Dropbox.RequestError}
    */
-  static rawRequest(options, emit = Dropbox.DefaultEmitter, stats = Dropbox.stats) {
+  static rawRequest(options, emit, stats) {
+    emit  = emit || Dropbox.DefaultEmitter;
+    stats = stats || Dropbox.stats;
     if (!options.accessToken) {
       return Promise.reject(new Dropbox.RequestError('Access token is required.', options));
     }
@@ -260,7 +262,7 @@ class Dropbox {
     });
   }
 
-  static initStats(from = {}) {
+  static initStats(from) {
     let stat = {
       flight   : 0,
       pending  : 0,
@@ -268,7 +270,7 @@ class Dropbox {
       errors   : 0,
       retries  : 0
     };
-    return Object.assign(stat, from);
+    return Object.assign(stat, from || {});
   }
 
   /**
@@ -281,7 +283,10 @@ class Dropbox {
    * @param {any} [emit=Dropbox.events.emit.bind(Dropbox.events)]
    * @return {Promise} See rawRequest
    */
-  static rpcRequest(accessToken, endpoint, parameters = {}, emit = Dropbox.DefaultEmitter, stats = Dropbox.stats) {
+  static rpcRequest(accessToken, endpoint, parameters, emit, stats) {
+    parameters = parameters || {};
+    emit = emit || Dropbox.DefaultEmitter;
+    stats = stats || Dropbox.stats;
     let options = {
       uri: 'https://api.dropboxapi.com/2/' + endpoint,
       accessToken: accessToken,
@@ -311,7 +316,10 @@ class Dropbox {
    * @param {object} options Dropbox options
    * @return {Promise} A promise that resolves to destionation stream
    */
-  static download(accessToken, src, dst, parameters = {}, emit = Dropbox.DefaultEmitter, stats = Dropbox.stats) {
+  static download(accessToken, src, dst, parameters, emit, stats) {
+    parameters = parameters || {};
+    emit = emit || Dropbox.DefaultEmitter;
+    stats = stats || Dropbox.stats;
     parameters.path = src;
     let options = {
       uri: 'https://content.dropboxapi.com/2/files/download',
@@ -332,7 +340,10 @@ class Dropbox {
    * @param {object} parameters Dropbox options
    * @return {Promise} A promise that resolves to undefined
    */
-  static upload(accessToken, src, dstPath, parameters = {}, emit = Dropbox.DefaultEmitter, stats = Dropbox.stats) {
+  static upload(accessToken, src, dstPath, parameters, emit, stats) {
+    parameters = parameters || {};
+    emit = emit || Dropbox.DefaultEmitter;
+    stats = stats || Dropbox.stats;
     parameters.path = dstPath;
     let options = {
       uri: 'https://content.dropboxapi.com/2/files/upload',
@@ -378,12 +389,12 @@ Dropbox.MAX_RETRY = 5;
  * Original error (if there is any) will be in `error` property.
  */
 Dropbox.RequestError = class RequestError extends Error {
-  constructor(msg, options, error = null) {
+  constructor(msg, options, error) {
     // Do not leak access token
     options.accessToken = '<access token>';
     super(msg);
     this.options = options;
-    this.error = error;
+    this.error = error || null;
   }
 };
 

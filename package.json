@@ -1,7 +1,7 @@
 {
   "name": "dropbox2",
-  "version": "0.1.0",
-  "description": "Highler level Dropbox SDK with cloud to local file syncing capability.",
+  "version": "0.0.1",
+  "description": "The unofficial Dropbox SDK",
   "main": "src/dropbox.js",
   "scripts": {
     "test": "node_modules/istanbul/lib/cli.js cover -x 'spec/**/*' node_modules/tape/bin/tape -- spec/*Spec.js"

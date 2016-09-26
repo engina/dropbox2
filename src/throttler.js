@@ -1,14 +1,17 @@
+'use strict';
+
 const RateLimiter = require('limiter').RateLimiter;
 const Promise = require('bluebird');
 
 class Throttler {
-  constructor(rate, interval = 1000) {
+  constructor(rate, interval) {
     this.limiters = {};
     this.rate     = rate;
-    this.interval = interval;
+    this.interval = interval || 1000;
   }
 
-  throttle(key = 'default') {
+  throttle(key) {
+    key = key || 'default;'
     return new Promise((resolve, reject) => {
       this.throttleCallback(key, resolve);
     });
