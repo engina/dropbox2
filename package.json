@@ -27,6 +27,7 @@
     "gulp": "^3.9.1",
     "gulp-clean": "^0.3.2",
     "gulp-js-deps": "^0.2.0",
+    "gulp-jsdoc3": "^1.0.0",
     "gulp-shell": "^0.5.2",
     "gulp-util": "^3.0.7",
     "istanbul": "^0.4.5",
@@ -45,6 +46,7 @@
     "fs-extra": "^0.30.0",
     "is-stream": "^1.1.0",
     "limiter": "^1.1.0",
-    "request": "^2.74.0"
+    "request": "^2.74.0",
+    "yargs": "^5.0.0"
   }
 }

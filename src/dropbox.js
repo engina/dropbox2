@@ -9,7 +9,7 @@ const isStream  = require('is-stream');
 const EventEmitter2 = require('eventemitter2').EventEmitter2;
 
 /**
- * @internal
+ * @private
  */
 class Retry extends Error {
   constructor(options, emit, stats, delay = 0) {
@@ -22,64 +22,54 @@ class Retry extends Error {
 }
 
 /**
- * Represents a Dropbox User that authorized our app.
+ * This is the unofficial Dropbox API client implementation.
  *
- * Provides:
- * 1. Syncing (from cloud to local storage)
- * 2. Retrieving delta recursively for any number of changes.
- *    i.e. if delta has_more is true, it fetches next rounds until it's complete.
- * 3. Downloads and uploads file in a streaming fashion to consume little memory
- * 4. Offers rpcRequest() that helps you use any Dropbox HTTP API easily
- * 5. Central throttling of all API request (per user, not per app) so that we won't get
- * the 429 HTTP Error.
+ * It provides following missing features of the official client library:
  *
- * Make sure the following static variables as you want them.
- * 1. Dropbox.USERS_DIR
+ * 1. Downloads and uploads file in a streaming fashion to consume minimal memory. Official library
+ * buffers downloads.
+ * 2. Central throttling of all API request so that we won't get the 429 HTTP Error.
+ * 3. Automatic retries on temporary errors (such as 500 and 429).
  *
- * Changes to USERS_DIR only effects the Dropbox instances created thereafter.
+ * This implementation offers a promise based interface. All success and errors are reported
+ * by resolving or rejecting returned promises.
  *
- * Dropbox offers a promise based interface all success and errors are reported to
- * by resolved or rejected promises.
+ * However, some diagnostic messages are communicated via events.
  *
- * However, for anything in between, are comunicated over events. Such as diagnostic messages,
- * warnings etc.
+ * These events will be fired from {@link Dropbox.events} object which is an EventEmitter2 instance.
  *
- * Static methods' events will be fired from Dropbox.events EventEmitter2 instance.
+ * However, you can provide your own emit function with the prototype *emit(eventType: string, ...) to
+ * emit events from your own instances or just log the diagnostic messages.
  *
- * As syncing operation can take quite some time depending on the scenario, Dropbox
- * instances emit some events to notify user about progress.
- * @emits sync-start
- * @emits sync-tasks
- * @type {object} An object with folders, deletes, downloads, ignored properties which
- *                tells you the amount of work to be done (i.e. eventValue.downloads.length)
- * @emits sync-file-downloaded Path of the downloaded file
- * @type {string}
- * @emits sync-completed
- * @emits log Uncritical log messages for diagnostic purposes.
- * @type {string}
- * @extends {EventEmitter2}
+ * This client also offers a Dropbox.stats object for futher statistical information. If no custom stats
+ * object is provided static {@link Dropbox.stats} object will be updated. This can be used to keep track of
+ * stats per user account etc.
+ *
+ * @emits log
+ * @emits retry
  */
 class Dropbox {
   /**
    * Low level request API.
    *
-   * User higher level methods instead.
+   * Use higher level methods instead.
    *
-   * @see Dropbox#rpcRequest
-   * @see Dropbox#download
-   * @see Dropbox#upload
+   * @see {@link Dropbox.rpcRequest}
+   * @see {@link Dropbox.download}
+   * @see {@link Dropbox.upload}
    *
    * @static
    * @param {object} options
-   * {
-   *  accessToken: <access token:string>,
-   *  uri: <uri: string>,
-   *  upload: <file to be uploaded:string|Readable>,
-   *  download: <file to store the result:string|Writable>,
-   *  paramters: <parameters for the specific end point:object>
+   * {<br>
+   *  accessToken: {string},<br>
+   *  uri: {string},<br>
+   *  upload: {string\|Readable},<br>
+   *  download: {string\|Writable},<br>
+   *  parameters: {Object}<br>
    * }
    * @param {EventEmitter2.emit} emit Emit function.
-   * @return {Promise} Resolves with the response body (for rpcRequests)
+   * @param {Object} stats Custom stat object
+   * @return {Promise<Object>} Resolves with the response body (for rpcRequests)
    * Rejects with {Dropbox.RequestError}
    */
   static rawRequest(options, emit = Dropbox.DefaultEmitter, stats = Dropbox.stats) {
@@ -143,13 +133,21 @@ class Dropbox {
         } else {
           // A regular RPC call
           requestOptions.headers['Content-Type'] = 'application/json';
-          requestOptions.body = options.parameters;
-          requestOptions.json = true;
+          if (Object.keys(options.parameters).length === 0) {
+            // dropbox requires you to send null as a non-JSON encoded string when
+            // the parameters object is empty.
+            // Not a JSON encoded "null" (including quotes) but a vanilla null as a string.
+            // this has a complication, see this promise's then below.
+            requestOptions.json = false;
+            requestOptions.body = 'null';
+          } else {
+            requestOptions.json = true;
+            requestOptions.body = options.parameters;
+          }
           // There must be a cb, otherwise Request won't parse body
           // See https://github.com/request/request/blob/v2.74.1/request.js#L972
           requestOptions.callback = () => {};
         }
-
         let req = request.post(requestOptions);
         if (options.upload) {
           let uploadStream;
@@ -235,6 +233,16 @@ class Dropbox {
       })
       .then(result => {
         stats.completed++;
+        // dropbox api requires you send plain string "null" (without the quotes)
+        // when sending an empty parameters object instead of JSON.stringify()ing it
+        // as usual. When doing that we set .json = false for the request...
+        // which results in the response not being JSON.parse()d so, here, we are
+        // working around that
+        try {
+          result = JSON.parse(result);
+        } catch (e) {
+          emit('log', 'JSON parse failed', e);
+        }
         return result;
       })
       .catch(Retry, retry => {
@@ -264,9 +272,7 @@ class Dropbox {
   }
 
   /**
-   * Static method for RPC requests
-   *
-   * User instance method if you want to avoid using access token.
+   * Dropbox RPC request
    *
    * @static
    * @param {string} accessToken
@@ -287,21 +293,19 @@ class Dropbox {
   /**
    * Downloads a file to a writable stream.
    *
-   * Notes:
-   * A failed download (HTTP Status != 2xx) could be automatically re-tried.
-   * It's easy to implement but backlogging can be dangerous. It should be well thought.
-   *
-   * History:
-   * Previously destination was a strem.Writable, it provides the flexibility to
-   * download to Buffers or anything streamy but that requires file descriptors
-   * to be opened before being passed to DropboxUer.download(src, dstStream).
+   * Note:
+   * Previously destination was strictly a strem.Writable, it provided the flexibility to
+   * download to Buffer streams or anything streamy but that requires file descriptors
+   * to be opened before being passed to DropboxUer.download().
    * Then the requests were throttled and downloaded accordingly. During this
    * whole process, file descriptors were closed one by one as the downloads
    * are completed. So, if you were to queue 20k downloads, 20k file descriptors
    * would be opened initially (it can't be since most OSes won't let you).
-   * So, instead, we have to resort to a less elegant API, and receive destination
-   * file path instead and create the stream when only we receive a response.
+   * So, instead, we have to add support to a less elegant API, and support receiving
+   * destination file as a path too. In this case, file descriptor is only opened when
+   * the actual download starts.
    *
+   * @param {string} accessToken
    * @param {string} src Dropbox src identifier (could be path or id)
    * @param {string|stream.Writable} dst Path or Writable stream to save the downloaded file to.
    * @param {object} options Dropbox options
@@ -319,7 +323,7 @@ class Dropbox {
   }
 
   /**
-   * Uploads (pipes) a readable stream to the cloud.
+   * Uploads a file to the cloud.
    *
    * https://www.dropbox.com/developers/documentation/http/documentation#files-upload
    * @param {string} accessToken Access token
@@ -343,21 +347,18 @@ class Dropbox {
 /**
  * Throttles HTTP API requests per account id.
  *
- * This is static because we want to rate per accountId (and not the Dropbox instance).
- *
- * So, even multiple instance of a Dropbox for a particular account will be throttled
- * properly.
- *
  * NOTE: npm package limiter is buggy https://github.com/jhurliman/node-rate-limiter/issues/25
  * Yet, the default value is a sweet spot for Dropbox API, so it should be fine, for now.
  *
- * @default is 600 requests per minute. With 600 request burst rate.
+ * @default is 600 requests per minute. With 600 request burst capacity.
  *
  * @static
  */
 Dropbox.THROTTLER = new Throttler(600, 60000);
 
-// Be a good network citizen and don't hammer Dropbox API servers.
+/**
+ * HTTPS agent to be used for the communication.
+ */
 Dropbox.AGENT = new https.Agent({keepAlive: true});
 
 /**
@@ -387,19 +388,27 @@ Dropbox.RequestError = class RequestError extends Error {
 };
 
 /**
- * If you use static methods events will be fired from this EventEmitter2 instance.
+ * If you haven't provided a custom emit function, this object will be used to
+ * emit diagnostic messages.
  * @static
  */
 Dropbox.events = new EventEmitter2();
 
+/**
+ * Default emitter
+ */
 Dropbox.DefaultEmitter = Dropbox.events.emit.bind(Dropbox.events);
 
+/**
+ * Stats object will have up to date statistical information about the requests that
+ * have been made so far.
+ */
 Dropbox.stats = {};
 
 /**
  * Stats on how many requests are on actually sent and on the fly. The rest of may be queued up
  * by the throttler.
- * @see Dropbox.stats.pending
+ * @see {@link Dropbox.stats.pending}
  * @static
  */
 Dropbox.stats.flight  = 0;

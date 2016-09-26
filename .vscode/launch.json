@@ -2,7 +2,27 @@
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "Launch",
+      "name": "dropboxUserSpec",
+      "type": "node",
+      "request": "launch",
+      "program": "${workspaceRoot}/spec/dropboxUserSpec.js",
+      "stopOnEntry": false,
+      "args": [],
+      "cwd": "${workspaceRoot}",
+      "preLaunchTask": null,
+      "runtimeExecutable": null,
+      "runtimeArgs": [
+        "--nolazy"
+      ],
+      "env": {
+        "NODE_ENV": "development"
+      },
+      "externalConsole": false,
+      "sourceMaps": false,
+      "outDir": null
+    },
+    {
+      "name": "dropboxSpec",
       "type": "node",
       "request": "launch",
       "program": "${workspaceRoot}/spec/dropboxSpec.js",

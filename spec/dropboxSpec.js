@@ -9,13 +9,6 @@ const fs  = Promise.promisifyAll(require('fs'));
 let Dropbox;
 
 nock.disableNetConnect();
-const Util = require('util');
-console.log('initial cache',
-  Util.inspect(
-    Object.keys(require.cache).filter(key => key.indexOf('src/dropbox') !== -1),
-    {maxArrayLength: 500}
-  )
-);
 
 // Test wrapper
 function test(testName, testBody, testFunction = tape) {
@@ -82,13 +75,27 @@ test('dropox base request method', t => {
     }
   })
   .then(response => {
-    t.deepEqual(response, {message: 'received'}, 'should receive parameters');
+    t.deepEqual(response, {message: 'received'}, 'should receive and parse response');
   })
   .catch(Dropbox.RequestError, err => {
     t.fail('should not fail');
   });
 
-  return Promise.all([test1, test2, test3]);
+  nock('https://api.dropboxapi.com')
+  .post('/2/test/endpoint', 'null')
+  .reply(200);
+
+  let test4 = Dropbox.rawRequest({
+    uri: 'https://api.dropboxapi.com/2/test/endpoint',
+    accessToken: 'foo'
+  })
+  .then(() => {
+    t.pass('should send null as non-JSON encoded string if parameters is empty');
+  })
+  .catch(Dropbox.RequestError, err => {
+    t.fail('should not fail');
+  });
+  return Promise.all([test1, test2, test3, test4]);
 });
 
 test('dropbox download', t => {
@@ -215,7 +222,7 @@ test('dropbox on HTTP 429 Error', t => {
   const WAIT = 2;
   let requests = [];
   nock('https://api.dropboxapi.com')
-  .post('/2/test/endpoint')
+  .post('/2/test/429')
   .times(Dropbox.MAX_RETRY + 1)
   .reply(function(uri, requestBody) {
     process.stderr.write('.');
@@ -232,7 +239,7 @@ test('dropbox on HTTP 429 Error', t => {
     retry++;
   });
   let stats = Dropbox.initStats();
-  return Dropbox.rpcRequest('dummyAccessToken', 'test/endpoint', {}, Dropbox.DefaultEmitter, stats)
+  return Dropbox.rpcRequest('dummyAccessToken', 'test/429', {}, Dropbox.DefaultEmitter, stats)
   .then(response => {
     t.equal(retry, Dropbox.MAX_RETRY, 'should emit rate-limited events');
     let elapsed = requests[Dropbox.MAX_RETRY] - requests[0];

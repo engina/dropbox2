@@ -6,81 +6,34 @@ const fse     = Promise.promisifyAll(require('fs-extra'));
 const Dropbox = require('./dropbox');
 const EventEmitter2 = require('eventemitter2');
 
-class DropboxUser extends EventEmitter2 {
+/**
+ * One way Dropbox Sync client.
+ *
+ * It only supports cloud to local syncing as of now.
+ *
+ * It will create two additional files during first call to {@link Sync#sync}.
+ *
+ * @class Sync
+ * @extends {EventEmitter2}
+ */
+class Sync extends EventEmitter2 {
   toString() {
-    return `${this.constructor.name} ${this.accountId}`;
-  }
-  /**
-   * Creates directory structure for a user in the DropboxUser.USERS_DIR folder.
-   *
-   * The directory structure is required for sync() operation.
-   *
-   * Creates:
-   * DropboxUser.USERS_DIR/{account_id}/data/ [folder] This is where files will be synced to.
-   * DropboxUser.USERS_DIR/{account_id}/whois [file]   Contains user's name and email information.
-   * DropboxUser.USERS_DIR/{account_id}/auth  [file]   Will contain access token etc.
-   *
-   * Later on, when you use sync(), DropboxUser.USERS_DIR/{account_id}/cursor file will also be created.
-   *
-   * @static
-   * @param {any} authInfo Auth info as recived from hash string in the dropbox
-   *              connect page.
-   * {
-   *   access_token: <string>,
-   *   token_type: <string>,
-   *   uid: <number>,
-   *   account_id: <string>
-   * }
-   * @return {Promise} A promise that resolves to DropboxUser
-   */
-  static create(authInfo) {
-    let newUserDir = path.join(DropboxUser.USERS_DIR, authInfo.account_id);
-    let userWhois;
-    return Dropbox.rpcRequest(authInfo.access_token, 'users/get_account', {account_id: authInfo.account_id})
-    .then(result => {
-      if (!result.email_verified) {
-        throw new Error('Dropbox user email not verified');
-      }
-      userWhois = result;
-    })
-    .then(() => fse.removeAsync(newUserDir))
-    .then(() => fse.ensureDirAsync(newUserDir))
-    // data is the directory where users' files will be synced to
-    .then(() => fse.ensureDirAsync(path.join(newUserDir, 'data')))
-    .then(() => fse.writeFileAsync(path.join(newUserDir, 'whois'), JSON.stringify(userWhois)))
-    .then(() => fse.writeFileAsync(path.join(newUserDir, 'auth'), JSON.stringify(authInfo)))
-    .then(() => new DropboxUser(authInfo.account_id));
+    return `${this.constructor.name} ${this.homeDir}`;
   }
 
   /**
-   * Creates a DropboxUser instance.
-   *
-   * Make sure you've created the directory structure for the user via DropboxUser.create().
-   *
-   * @see DropboxUser.create()
-   * @see DropboxUser.list()
-   *
-   * @param {string} accountId Dropbox Account ID is 40-character string.
-   * This is used to build directory structure for this user instance.
-   * So, account id must be a safe string (without ../ and such trickery).
+   * Creates an instance of Sync.
+   * 
+   * @param {string} folder Local folder path
+   * @param {string} accessToken Access token for the user
    */
-  constructor(accountId) {
+  constructor(folder, accessToken) {
     super();
-    if (typeof accountId !== 'string' || accountId.length !== 40) {
-      throw new Error(`Account id must be a string of 40 characters.`);
-    }
-    this.accountId   = accountId;
-    this.home        = path.resolve(path.join(DropboxUser.USERS_DIR, accountId));
-    this.dataDir     = path.resolve(path.join(this.home, 'data'));
-    this.cursorFile  = path.resolve(path.join(this.home, 'cursor'));
-    this.whoisFile   = path.resolve(path.join(this.home, 'whois'));
-    this.authFile    = path.resolve(path.join(this.home, 'auth'));
-    // This is used to serialize sync() and don't run two sync() operations at the same time
-    this.previousPromise  = undefined;
-    // Count of the queued sync operations
-    this.depth = 0;
-
-    this.stats = {};
+    this.homeDir         = path.resolve(folder);
+    this.cursorFile      = path.resolve(path.join(this.homeDir, '.cursor'));
+    this.accessToken     = accessToken;
+    this.accessTokenFile = path.resolve(path.join(this.homeDir, '.access_token'));
+    this.stats           = {};
     Object.keys(Dropbox.stats).forEach(stat => {
       this.stats[stat] = 0;
     });
@@ -100,92 +53,50 @@ class DropboxUser extends EventEmitter2 {
     });
   }
 
-  /**
-   * {
-   *   "account_id": "string",
-   *   "name": {
-   *     "given_name": "Engin",
-   *     "surname": "AYDOGAN",
-   *     "familiar_name": "Engin",
-   *     "display_name": "Engin AYDOGAN"
-   *   }
-   *   "email": "engin@bzzzt.biz",
-   *   "email_verified": true,
-   *   "disabled": false,
-   *   "is_teammate": true
-   * }
-   *
-   * @return {Promise} That resolves to above data structure.
-   */
-  getWhois() {
-    return fse.readFileAsync(this.whoisFile, 'utf8')
-    .then(whoisRaw => JSON.parse(whoisRaw));
-  }
-
-  /**
-   * Reads, parse and returns auth object. In the following format.
-   *
-   * {
-   *   "access_token": <accessToken:string>,
-   *   "token_type": "bearer",
-   *   "uid": <uid:string>,
-   *   "account_id": <accountId:string>
-   * }
-   *
-   * Note: This method caches the auth file so changes won't be read until
-   * you invalidate cache via `user.authCache = undefined`
-   *
-   * So, if access token is expired or something, you have to clear this cache
-   * or simply create a new user instance.
-   *
-   * @return {Promise} That resolves to above data structure.
-   */
-  getAuth() {
-    if (this.authCache === undefined) {
-      this.authCache = fse.readFileAsync(this.authFile, 'utf8')
-      .then(authRaw => JSON.parse(authRaw));
+/**
+ * This method uses an instance variable accessTokenCache to cache the access token
+ * as it might be used quite frequently.
+ *
+ * So, if you want to invalidate the cache simply delete the instance variable accessTokenCache.
+ * @returns {Promise<string, Sync.Error>} Current access token for this sync point.
+ */
+  getAccessToken() {
+    if (this.accessTokenCache === undefined) {
+      this.accessTokenCache = fse.readFileAsync(this.accessTokenFile, 'utf8')
+      .catch(error => {
+        if (error.code === 'ENOENT') {
+          // Access file does not exist (yet), see if user provided one in the constructor
+          if (typeof this.accessToken === 'string') {
+            // Write that to the access token file and return afterwards
+            return fse.outputFileAsync(this.accessTokenFile, this.accessToken, 'utf8')
+            .then(() => this.accessToken);
+          }
+          // No access token file present and no access token is provided manually
+          return Promise.reject(new Sync.Error('Provide access token in the constructor if it is not saved in the access token file', 'ENOACC'));
+        }
+        return Promise.reject(new Sync.Error('There was a problem reading the access token file', error));
+      });
     }
-    return this.authCache;
+    return this.accessTokenCache;
   }
 
-  /**
-   * @static
-   * @return {Array} A list of strings of account ids for the users created via
-   * DropboxUser.create()
-   */
-  static list() {
-    return fse.readdirAsync(DropboxUser.USERS_DIR);
-  }
-
-  /**
-   * Same as static rpcRequest method, except this one pulls the access token for the
-   * instance automatically.
-   *
-   * @see DropboxUser.rawRequest for implementation details
-   *
-   * @param {string} endpoint Endpoint without the preceeding slash, ex: 'users/get_account'
-   * @param {object} parameters Parameters for the end point
-   * @return {Promise} See rawRequest
-   */
   rpcRequest(endpoint, parameters) {
-    return this.getAuth()
-    .then(({access_token}) => Dropbox.rpcRequest(access_token, endpoint, parameters, this.emit.bind(this), this.stats));
+    return this.getAccessToken()
+    .then(accessToken => Dropbox.rpcRequest(accessToken, endpoint, parameters, this.emit.bind(this), this.stats));
   }
 
   download(src, dstPath, parameters = {}) {
-    return this.getAuth()
-    .then(({access_token}) => Dropbox.download(access_token, src, dstPath, parameters, this.emit.bind(this), this.stats));
+    return this.getAccessToken()
+    .then(accessToken => Dropbox.download(accessToken, src, dstPath, parameters, this.emit.bind(this), this.stats));
   }
 
 
   upload(src, dstPath, parameters = {}) {
-    this.emit('log', 'uploading shit');
-    return this.getAuth()
-    .then(({access_token}) => Dropbox.upload(access_token, src, dstPath, parameters, this.emit.bind(this), this.stats));
+    return this.getAccessToken()
+    .then(accessToken => Dropbox.upload(accessToken, src, dstPath, parameters, this.emit.bind(this), this.stats));
   }
 
   /**
-   * Syncs users files into DropboxUser.USERS_DIR/{accountId}/data folder.
    * @param {Function} filter is called with file object and the object is processed
    *                   only if this function returns true. Can be used to skip
    *                   file downloads, directory creations and file deletions.
@@ -194,11 +105,6 @@ class DropboxUser extends EventEmitter2 {
    *                              path_lower: <lower case path>,
    *                              path_display: <path>,
    *                              id: <dropbox file id>}
-   * @param {Number} timeout Timeout for the whole sync operation in ms.
-   * @default 2147483647 because JS timer values are signed 32 bit.
-   * @throws Promise.TimeoutError when download operation times out
-   * @throws DropboxUser.SyncError when sync queue is greater than DropboxUser.MAX_SYNC_QUEUE
-   * @see DropboxUser#MAX_SYNC_QUEUE
    * @return {Promise} A Promise that resolves to an object
    * {
         folders  : <array of folder entries that are created>,
@@ -207,19 +113,7 @@ class DropboxUser extends EventEmitter2 {
         ignored  : <array of file entries that are ignored>
       }
    */
-  sync(filter = () => true, timeout = 2147483647) {
-    // Prevent backlogging
-    if (this.depth >= DropboxUser.MAX_SYNC_QUEUE) {
-      return Promise.reject(new DropboxUser.SyncError('Too many sync operations queued.'));
-    }
-    this.depth++;
-
-    if (this.previousPromise === undefined) {
-      this.previousPromise = Promise.resolve();
-    } else {
-      this.emit('log', `Sync in progress. Queueing:  ${this.depth}`);
-    }
-
+  sync(filter = () => true) {
     // Data that needs to be passed between some distant thens
     let delta;
     let folders   = [];
@@ -227,14 +121,14 @@ class DropboxUser extends EventEmitter2 {
     let downloads = [];
     let ignored   = [];
 
-    let newPromise = this.previousPromise
-    .then(() => this.emit('sync-start'))
+    this.emit('sync-start');
+    return fse.ensureDirAsync(this.homeDir)
     .then(() => this.delta())
     .then(result => {
       delta = result;
       // Calculate absolute paths
       let changes = delta.allEntries.map(change => {
-        change.absolutePath = path.resolve(path.join(this.dataDir, change.path_lower));
+        change.absolutePath = path.resolve(path.join(this.homeDir, change.path_lower));
         return change;
       })
       // And make sure they are safe
@@ -242,6 +136,7 @@ class DropboxUser extends EventEmitter2 {
       // Categorize tasks
       for (let change of changes) {
         if (!filter(change)) {
+          this.emit('log', `Ignored ${change.path_display}`);
           ignored.push(change);
           continue;
         }
@@ -283,7 +178,6 @@ class DropboxUser extends EventEmitter2 {
           });
       }));
     })
-    .timeout(timeout, 'Sync download operation timeout')
     // We consider this sync completed now, so, saving the cursor
     .then(() => {
       this.emit('sync-completed');
@@ -300,8 +194,7 @@ class DropboxUser extends EventEmitter2 {
     .catch(e => {
       /**
        * !FIXME
-       * We are here probably because either sync is timed out (Promise.TimeoutError) or one of the
-       * downloads returned non 200-ish HTTP code.
+       * We are here probably because one of the downloads returned non 200-ish HTTP code.
        *
        * Even though, sync operation failed here, because it's not realiable anymore,
        * all the download requests are either:
@@ -323,17 +216,7 @@ class DropboxUser extends EventEmitter2 {
        * But it's more of a nuisance as it does not result in operational failure but just waste of resources.
        */
       throw e;
-    })
-    .finally(() => {
-      this.depth--;
-      if (this.previousPromise === newPromise) {
-        this.previousPromise = undefined;
-      } else {
-        // log.info('NOT removing promise from syncPromises, because it has been overriden');
-      }
     });
-    this.previousPromise = newPromise;
-    return newPromise;
   }
 
   /**
@@ -343,11 +226,12 @@ class DropboxUser extends EventEmitter2 {
    *
    * We cannot blindly trust an information coming from an external source.
    *
+   * @private
    * @param {string} absolutePath Absolute path of the file to be checked
    * @return {bool} True if file is safe
    */
   _isSafe(absolutePath) {
-    let jail = this.dataDir + path.sep;
+    let jail = this.homeDir + path.sep;
     return absolutePath.startsWith(jail);
   }
 
@@ -355,6 +239,7 @@ class DropboxUser extends EventEmitter2 {
    * If a delta operation cannot fit into a single request/response transaction
    * we recursive get all the remaining deltas here.
    *
+   * @private
    * @param {object} data A response got from files/list_folder
    *                      or files/list_folder/continue request
    * @return {object} An object with a custom allEntries parameter which contains
@@ -400,7 +285,7 @@ class DropboxUser extends EventEmitter2 {
    *                  to save the new cursor (probably after doing some work successfuly)
    */
   delta(cursor) {
-    this.emit('log', 'Computing difference between local copy and cloud');
+    this.emit('log', 'Getting the list of differences');
     // Try to read the last cursor
     return Promise.try(() => {
       if (cursor !== undefined) {
@@ -423,11 +308,11 @@ class DropboxUser extends EventEmitter2 {
   }
 }
 
+Sync.Error = class SyncError extends Error {
+  constructor(msg, native = null) {
+    super(msg);
+    this.native = native;
+  }
+};
 
-DropboxUser.USERS_DIR = 'dropboxUsers';
-
-DropboxUser.MAX_SYNC_QUEUE = 10;
-
-DropboxUser.SyncError = class SyncError extends Error {};
-
-module.exports = DropboxUser;
+module.exports = Sync;
