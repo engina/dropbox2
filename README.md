@@ -4,7 +4,7 @@
 <a name="Dropbox"></a>
 
 ## Dropbox
-This is the unofficial Dropbox API client implementation.
+This is the unofficial Dropbox API client implementation that supports Node 4 and up.
 
 It provides following missing features of the official client library:
 
