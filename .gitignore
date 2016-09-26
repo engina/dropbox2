@@ -44,3 +44,5 @@ jspm_packages
 .deps
 
 typings/
+
+README.md
