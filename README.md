@@ -244,17 +244,80 @@ https://www.dropbox.com/developers/documentation/http/documentation#files-upload
 | parameters | <code>object</code> | Dropbox options |
 
 
-<a name="Sync"></a>
+<a name="User"></a>
 
-## Sync ⇐ <code>EventEmitter2</code>
+## User
 **Kind**: global class  
-**Extends:** <code>EventEmitter2</code>  
-<a name="new_Sync_new"></a>
 
-### new Sync()
-One way Dropbox Sync client.
+* [User](#User)
+    * [new User(folder, accessToken)](#new_User_new)
+    * [.getCursor()](#User+getCursor) ⇒ <code>Promise.&lt;string, null&gt;</code>
+    * [.getAccessToken()](#User+getAccessToken) ⇒ <code>Promise.&lt;string, Sync.Error&gt;</code>
+    * [.sync(filter)](#User+sync) ⇒ <code>Promise</code>
+    * [.delta(cursor)](#User+delta) ⇒ <code>object</code>
 
-It only supports cloud to local syncing as of now.
+<a name="new_User_new"></a>
 
-It will create two additional files during first call to [Sync#sync](Sync#sync).
+### new User(folder, accessToken)
+Creates an instance of Sync.
+
+
+| Param | Type | Description |
+| --- | --- | --- |
+| folder | <code>string</code> | Local folder path |
+| accessToken | <code>string</code> | Access token for the user |
+
+<a name="User+getCursor"></a>
+
+### user.getCursor() ⇒ <code>Promise.&lt;string, null&gt;</code>
+**Kind**: instance method of <code>[User](#User)</code>  
+**Returns**: <code>Promise.&lt;string, null&gt;</code> - The last saved cursor, null if there is none.  
+**Rejects**: <code>Error</code> If an unexpected file system error occurs.  
+<a name="User+getAccessToken"></a>
+
+### user.getAccessToken() ⇒ <code>Promise.&lt;string, Sync.Error&gt;</code>
+This method uses an instance variable accessTokenCache to cache the access token
+as it might be used quite frequently.
+
+So, if you want to invalidate the cache simply delete the instance variable accessTokenCache.
+
+**Kind**: instance method of <code>[User](#User)</code>  
+**Returns**: <code>Promise.&lt;string, Sync.Error&gt;</code> - Current access token for this sync point.  
+<a name="User+sync"></a>
+
+### user.sync(filter) ⇒ <code>Promise</code>
+**Kind**: instance method of <code>[User](#User)</code>  
+**Returns**: <code>Promise</code> - A Promise that resolves to an object
+{
+        folders  : <array of folder entries that are created>,
+        deletes  : <array of file entries that got deleted>,
+        downloads: <array of file entries that got downloaded>,
+        ignored  : <array of file entries that are ignored>
+      }  
+
+| Param | Type | Description |
+| --- | --- | --- |
+| filter | <code>function</code> | is called with file object and the object is processed                   only if this function returns true. Can be used to skip                   file downloads, directory creations and file deletions.                   Object is {'.tag': <folder|file|deleted>,                              name  : <file name>,                              path_lower: <lower case path>,                              path_display: <path>,                              id: <dropbox file id>} |
+
+<a name="User+delta"></a>
+
+### user.delta(cursor) ⇒ <code>object</code>
+Returns a delta since the last cursor.
+
+This method does not update the cursor file itself. It's user's responsibility
+to update the cursor file, possible after completing a task (such as sync) succesfully.
+
+Once the caller of this method [Sync#sync](Sync#sync) saves the returned cursor, the next call to
+delta will return the changes from that cursor and the entries returned in the
+current call will be lost.
+
+**Kind**: instance method of <code>[User](#User)</code>  
+**Returns**: <code>object</code> - An object with allEntries property which holds an array
+                 of all the entries since the last cursor saved.
+                 Also has a .cursor property. It's caller's responsibility
+                 to save the new cursor (probably after doing some work successfuly)  
+
+| Param | Type | Description |
+| --- | --- | --- |
+| cursor | <code>string</code> | Last cursor to get the delta from. null if you don't have a cursor                  and want to get the delta from the very beginning. |
 
