@@ -243,7 +243,7 @@ class Dropbox {
         try {
           result = JSON.parse(result);
         } catch (e) {
-          emit('log', 'JSON parse failed', e);
+          emit('log', 'JSON parse failed', result, e);
         }
         return result;
       })
