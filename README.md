@@ -249,15 +249,6 @@ https://www.dropbox.com/developers/documentation/http/documentation#files-upload
 ## Sync ⇐ <code>EventEmitter2</code>
 **Kind**: global class  
 **Extends:** <code>EventEmitter2</code>  
-
-* [Sync](#Sync) ⇐ <code>EventEmitter2</code>
-    * [new Sync()](#new_Sync_new)
-    * [new Sync(folder, accessToken)](#new_Sync_new)
-    * [.getCursor()](#Sync+getCursor) ⇒ <code>Promise.&lt;string, null&gt;</code>
-    * [.getAccessToken()](#Sync+getAccessToken) ⇒ <code>Promise.&lt;string, Sync.Error&gt;</code>
-    * [.sync(filter)](#Sync+sync) ⇒ <code>Promise</code>
-    * [.delta(cursor)](#Sync+delta) ⇒ <code>object</code>
-
 <a name="new_Sync_new"></a>
 
 ### new Sync()
@@ -265,70 +256,5 @@ One way Dropbox Sync client.
 
 It only supports cloud to local syncing as of now.
 
-It will create two additional files during first call to [sync](#Sync+sync).
-
-<a name="new_Sync_new"></a>
-
-### new Sync(folder, accessToken)
-Creates an instance of Sync.
-
-
-| Param | Type | Description |
-| --- | --- | --- |
-| folder | <code>string</code> | Local folder path |
-| accessToken | <code>string</code> | Access token for the user |
-
-<a name="Sync+getCursor"></a>
-
-### sync.getCursor() ⇒ <code>Promise.&lt;string, null&gt;</code>
-**Kind**: instance method of <code>[Sync](#Sync)</code>  
-**Returns**: <code>Promise.&lt;string, null&gt;</code> - The last saved cursor, null if there is none.  
-**Rejects**: <code>Error</code> If an unexpected file system error occurs.  
-<a name="Sync+getAccessToken"></a>
-
-### sync.getAccessToken() ⇒ <code>Promise.&lt;string, Sync.Error&gt;</code>
-This method uses an instance variable accessTokenCache to cache the access token
-as it might be used quite frequently.
-
-So, if you want to invalidate the cache simply delete the instance variable accessTokenCache.
-
-**Kind**: instance method of <code>[Sync](#Sync)</code>  
-**Returns**: <code>Promise.&lt;string, Sync.Error&gt;</code> - Current access token for this sync point.  
-<a name="Sync+sync"></a>
-
-### sync.sync(filter) ⇒ <code>Promise</code>
-**Kind**: instance method of <code>[Sync](#Sync)</code>  
-**Returns**: <code>Promise</code> - A Promise that resolves to an object
-{
-        folders  : <array of folder entries that are created>,
-        deletes  : <array of file entries that got deleted>,
-        downloads: <array of file entries that got downloaded>,
-        ignored  : <array of file entries that are ignored>
-      }  
-
-| Param | Type | Description |
-| --- | --- | --- |
-| filter | <code>function</code> | is called with file object and the object is processed                   only if this function returns true. Can be used to skip                   file downloads, directory creations and file deletions.                   Object is {'.tag': <folder|file|deleted>,                              name  : <file name>,                              path_lower: <lower case path>,                              path_display: <path>,                              id: <dropbox file id>} |
-
-<a name="Sync+delta"></a>
-
-### sync.delta(cursor) ⇒ <code>object</code>
-Returns a delta since the last cursor.
-
-This method does not update the cursor file itself. It's user's responsibility
-to update the cursor file, possible after completing a task (such as sync) succesfully.
-
-Once the caller of this method [sync](#Sync+sync) saves the returned cursor, the next call to
-delta will return the changes from that cursor and the entries returned in the
-current call will be lost.
-
-**Kind**: instance method of <code>[Sync](#Sync)</code>  
-**Returns**: <code>object</code> - An object with allEntries property which holds an array
-                 of all the entries since the last cursor saved.
-                 Also has a .cursor property. It's caller's responsibility
-                 to save the new cursor (probably after doing some work successfuly)  
-
-| Param | Type | Description |
-| --- | --- | --- |
-| cursor | <code>string</code> | Last cursor to get the delta from. null if you don't have a cursor                  and want to get the delta from the very beginning. |
+It will create two additional files during first call to [Sync#sync](Sync#sync).
 
