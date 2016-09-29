@@ -8,7 +8,7 @@ const Promise = require('bluebird');
 const fse = Promise.promisifyAll(require('fs'));
 
 const Dropbox = require('../src/dropbox');
-const Sync = require('../src/sync');
+const User = require('../src/user');
 const Throttler = require('../src/throttler');
 
 nock.disableNetConnect();
@@ -37,12 +37,12 @@ function n(endpoint, opts) {
 }
 
 test('dropbox error handling', t => {
-  let sync = new Sync('newfolder' /* and no access token */);
+  let sync = new User('newfolder' /* and no access token */);
   sync.sync()
   .then(() => {
     t.fail('should detect missing configuration');
   })
-  .catch(Sync.Error, error => {
+  .catch(User.Error, error => {
     t.pass('should detect missing configuration');
   })
   .catch(error => {
@@ -56,7 +56,7 @@ test('dropbox error handling', t => {
 test('dropbox test suite #1 sync ~600 files', t => {
   mock({});
   // test create
-  let sync = new Sync('somefolder', fixtures.dropbox.authInfo.access_token);
+  let sync = new User('somefolder', fixtures.dropbox.authInfo.access_token);
   sync.getCursor()
   .then(cursor => {
     t.equal(cursor, null, 'should return null for a cursor since this is the first run');
@@ -181,7 +181,7 @@ test('dropbox test suite #2 sync 10k files', t => {
   n('users/get_account')
   .reply(200, fixtures.dropbox.responses.users$get_account);
 
-  let sync = new Sync('local', fixtures.dropbox.authInfo.access_token);
+  let sync = new User('local', fixtures.dropbox.authInfo.access_token);
   n('files/list_folder')
   .reply(200, fixtures.dropbox.responses.files$list_folder_big);
 

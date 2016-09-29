@@ -16,7 +16,7 @@ const EventEmitter2 = require('eventemitter2');
  * @class Sync
  * @extends {EventEmitter2}
  */
-class Sync extends EventEmitter2 {
+class User extends EventEmitter2 {
   toString() {
     return `${this.constructor.name} ${this.homeDir}`;
   }
@@ -73,9 +73,9 @@ class Sync extends EventEmitter2 {
             .then(() => this.accessToken);
           }
           // No access token file present and no access token is provided manually
-          return Promise.reject(new Sync.Error('Provide access token in the constructor if it is not saved in the access token file', 'ENOACC'));
+          return Promise.reject(new User.Error('Provide access token in the constructor if it is not saved in the access token file', 'ENOACC'));
         }
-        return Promise.reject(new Sync.Error('There was a problem reading the access token file', error));
+        return Promise.reject(new User.Error('There was a problem reading the access token file', error));
       });
     }
     return this.accessTokenCache;
@@ -310,11 +310,11 @@ class Sync extends EventEmitter2 {
   }
 }
 
-Sync.Error = class SyncError extends Error {
+User.Error = class UserError extends Error {
   constructor(msg, native) {
     super(msg);
     this.native = native;
   }
 };
 
-module.exports = Sync;
+module.exports = User;
