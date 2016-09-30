@@ -234,6 +234,9 @@ class Dropbox {
       })
       .then(result => {
         stats.completed++;
+        if (typeof result === 'object') {
+          return result;
+        }
         // if this is a download, the result will be undefined
         if (result === undefined) {
           return result;
@@ -243,10 +246,12 @@ class Dropbox {
         // as usual. When doing that we set .json = false for the request...
         // which results in the response not being JSON.parse()d so, here, we are
         // working around that
-        try {
-          result = JSON.parse(result);
-        } catch (e) {
-          emit('log', 'JSON parse failed', result, e);
+        if (typeof result === 'string') {
+          try {
+            result = JSON.parse(result);
+          } catch (e) {
+            emit('log', 'JSON parse failed', result, e);
+          }
         }
         return result;
       })
