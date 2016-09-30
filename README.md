@@ -37,7 +37,7 @@ npm install dropbox2
 ## examples
 ````js
 const Dropbox = require('dropbox2').Dropbox;
-
+const DropboxUser = require('dropbox2').User;
 // First parameter is the access token of the target user
 // Second parameter is the HTTP end point as documented in https://dropbox.github.io/dropbox-api-v2-explorer/
 // Third parameter is the parameters of the above end point as documented above.
@@ -46,6 +46,12 @@ Dropbox.rpcRequest(ACCESS_TOKEN, 'files/list_folder', {path: ''})
   console.log(result.entries);
 });
 ```
+
+let user = new User('localfolder', ACCESS_TOKEN);
+user.sync()
+.then(changes => {
+  console.log(changes);
+});
 
 
 * [Dropbox](#Dropbox)
