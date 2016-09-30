@@ -45,13 +45,14 @@ Dropbox.rpcRequest(ACCESS_TOKEN, 'files/list_folder', {path: ''})
 .then(result => {
   console.log(result.entries);
 });
-```
 
-let user = new User('localfolder', ACCESS_TOKEN);
+let user = new DropboxUser('localfolder', ACCESS_TOKEN);
 user.sync()
 .then(changes => {
   console.log(changes);
 });
+```
+
 
 
 * [Dropbox](#Dropbox)
