@@ -174,15 +174,32 @@ test('dropbox upload', t => {
     t.pass('should set Dropbox-API-Arg HTTP Header');
     t.equal(this.req.headers['content-type'], 'application/octet-stream', 'should set HTTP Content-Type');
     t.equal(requestBody, testData, 'should upload the payload');
-    return [200, testData];
+    let response = {
+      "name": "cloud",
+      "path_lower": "/path/on/the/cloud",
+      "path_display": "/path/on/the/cloud",
+      "id": "id:4g0reZjDjHAAAAAAAAC7vQ",
+      "client_modified": "2016-09-30T08:12:26Z",
+      "server_modified": "2016-09-30T08:12:26Z",
+      "rev": "1edc14ca61640",
+      "size": 129524
+    };
+    return [200, JSON.stringify(response)];
   });
 
   let test1 = Dropbox.upload('dummyAccessToken', './.tmp~', '/path/on/the/cloud')
+  .then(result => {
+    t.equal(result.name, 'cloud', 'should parse response');
+  })
   .catch(error => {
+    console.log('upload error', error);
     t.fail('should be able to upload via path without errors');
   });
 
   let test2 = Dropbox.upload('dummyAccessToken', fs.createReadStream('./.tmp~'), '/path/on/the/cloud')
+  .then(result => {
+    t.equal(result.path_lower, '/path/on/the/cloud', 'should parse response');
+  })
   .catch(() => {
     t.fail('should be able to upload via stream.Readable without errors');
   });

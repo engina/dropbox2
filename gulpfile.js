@@ -3,8 +3,6 @@ var jsdeps  = require('gulp-js-deps');
 var gutil = require('gulp-util');
 var clean = require('gulp-clean');
 var shell = require('gulp-shell');
-var gitify = require('jsdoc-githubify');
-var jsdoc = require('gulp-jsdoc3');
 
 function buildDeps(glob) {
   gutil.log(gutil.colors.green('Building dependency list for'), glob);
@@ -32,15 +30,4 @@ gulp.task('test', ['build-deps'], cb => {
     .pipe(jsdeps.build())
     .pipe(gulp.dest('.deps'));
   });
-});
-
-gulp.task('jsdoc', cb => {
-  gulp.src(['README.md', './src/**/*.js'], {read: false})
-  .pipe(jsdoc(cb));
-});
-
-gulp.task('gitdoc', ['jsdoc'], () => {
-  gulp.src('out/**/*.html')
-  .pipe(gitify())
-  .pipe(gulp.dest('gitdocs'));
 });

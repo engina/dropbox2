@@ -130,6 +130,9 @@ class Dropbox {
           // If upload or download pack the parameters into the header.
           requestOptions.headers['Dropbox-API-Arg'] = JSON.stringify(options.parameters);
           if (options.upload) {
+            // There must be a cb, otherwise Request won't parse body
+            // See https://github.com/request/request/blob/v2.74.1/request.js#L972
+            requestOptions.callback = () => {};
             requestOptions.headers['Content-Type'] = 'application/octet-stream';
           }
         } else {
