@@ -226,7 +226,6 @@ class Dropbox {
           options.retry++;
           stats.retries++;
           emit('retry', 'Attempting to retrying due to socket error');
-          // resolve(Dropbox.rawRequest(options, emit, stats));
           reject(new Retry(options, emit, stats));
         })
         .on('complete', (response, body) => {
@@ -235,6 +234,10 @@ class Dropbox {
       })
       .then(result => {
         stats.completed++;
+        // if this is a download, the result will be undefined
+        if (result === undefined) {
+          return result;
+        }
         // dropbox api requires you send plain string "null" (without the quotes)
         // when sending an empty parameters object instead of JSON.stringify()ing it
         // as usual. When doing that we set .json = false for the request...
